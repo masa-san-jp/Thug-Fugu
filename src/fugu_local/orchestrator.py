@@ -69,7 +69,7 @@ class FuguLocalOrchestrator:
         if not messages:
             raise OrchestrationError("At least one message is required")
 
-        user_text = _message_text(messages)
+        user_text = _latest_user_message_text(messages)
         synthesizer = self._select_synthesizer()
         worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
         selected_roles = self._select_worker_roles(worker_roles, user_text)
@@ -286,8 +286,11 @@ def messages_from_dicts(raw_messages: Iterable[dict]) -> List[ChatMessage]:
     return messages
 
 
-def _message_text(messages: Iterable[ChatMessage]) -> str:
-    return "\n".join(message.content for message in messages if message.role != "system")
+def _latest_user_message_text(messages: Iterable[ChatMessage]) -> str:
+    for message in reversed(list(messages)):
+        if message.role == "user":
+            return message.content
+    return ""
 
 
 def _format_messages(messages: Iterable[ChatMessage]) -> str:
