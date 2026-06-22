@@ -1,11 +1,12 @@
 import json
 import threading
 import unittest
+import urllib.error
 import urllib.request
 
 from fugu_local.config import config_from_dict
 from fugu_local.orchestrator import FuguLocalOrchestrator
-from fugu_local.server import FuguLocalHTTPServer, FuguLocalHandler
+from fugu_local.server import FuguLocalHTTPServer, FuguLocalHandler, MAX_REQUEST_BODY_BYTES
 
 
 class ServerTests(unittest.TestCase):
@@ -38,12 +39,68 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["roles"], ["planner"])
 
     def test_chat_completions(self):
-        data = json.dumps(
+        status, body = self._post_chat(
             {
                 "model": "fugu-local",
                 "messages": [{"role": "user", "content": "hello"}],
             }
-        ).encode("utf-8")
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["object"], "chat.completion")
+        self.assertEqual(body["choices"][0]["message"]["role"], "assistant")
+        self.assertIn("echo:m/mock", body["choices"][0]["message"]["content"])
+
+    def test_rejects_streaming_requests(self):
+        status, body = self._post_chat(
+            {
+                "model": "fugu-local",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            }
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("streaming", body["error"]["message"])
+
+    def test_rejects_tool_calling_requests(self):
+        status, body = self._post_chat(
+            {
+                "model": "fugu-local",
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [],
+            }
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("tool calling", body["error"]["message"])
+
+    def test_rejects_invalid_temperature(self):
+        status, body = self._post_chat(
+            {
+                "model": "fugu-local",
+                "messages": [{"role": "user", "content": "hello"}],
+                "temperature": "0.2",
+            }
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("temperature", body["error"]["message"])
+
+    def test_rejects_invalid_max_tokens(self):
+        status, body = self._post_chat(
+            {
+                "model": "fugu-local",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 0,
+            }
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("max_tokens", body["error"]["message"])
+
+    def test_rejects_oversized_request_body(self):
+        data = b"{}" + (b" " * MAX_REQUEST_BODY_BYTES)
         request = urllib.request.Request(
             f"{self.base_url}/v1/chat/completions",
             data=data,
@@ -51,14 +108,28 @@ class ServerTests(unittest.TestCase):
             method="POST",
         )
 
-        with urllib.request.urlopen(request, timeout=5) as response:
-            body = json.loads(response.read().decode("utf-8"))
+        status, body = self._open_json(request)
 
-        self.assertEqual(body["object"], "chat.completion")
-        self.assertEqual(body["choices"][0]["message"]["role"], "assistant")
-        self.assertIn("echo:m/mock", body["choices"][0]["message"]["content"])
+        self.assertEqual(status, 413)
+        self.assertIn("too large", body["error"]["message"])
+
+    def _post_chat(self, payload):
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/v1/chat/completions",
+            data=data,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        return self._open_json(request)
+
+    def _open_json(self, request):
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
 if __name__ == "__main__":
     unittest.main()
-
