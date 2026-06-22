@@ -1,0 +1,13 @@
+{
+  "models": [
+    { "name": "oss-120b", "backend": "ollama", "model": "gpt-oss:120b", "base_url": "http://localhost:11434", "timeout_seconds": 300 },
+    { "name": "oss-20b",  "backend": "ollama", "model": "gpt-oss:20b",  "base_url": "http://localhost:11434", "timeout_seconds": 300 }
+  ],
+  "roles": [
+    { "name": "planner", "model": "oss-120b", "system_prompt": "あなたは計画担当。タスクを分解しリスクを挙げる。簡潔に。", "keywords": ["計画","設計","plan","design"], "always_include": true },
+    { "name": "coder", "model": "oss-20b", "system_prompt": "あなたは実装担当。具体的な実装手順を出す。簡潔に。", "keywords": ["実装","コード","code","implement","test"] },
+    { "name": "reviewer", "model": "oss-120b", "system_prompt": "あなたはレビュアー。正しさ・安全・運用リスクを点検。簡潔に。", "keywords": ["レビュー","検証","review","risk"] },
+    { "name": "synthesizer", "model": "oss-120b", "system_prompt": "あなたは統合担当。worker出力を1つの簡潔な回答に統合。", "is_synthesizer": true }
+  ],
+  "orchestrator": { "selection_policy": "keyword", "max_parallel_workers": 4, "temperature": 0.2 }
+}
