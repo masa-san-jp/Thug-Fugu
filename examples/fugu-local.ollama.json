@@ -1,0 +1,51 @@
+{
+  "models": [
+    {
+      "name": "ollama-general",
+      "backend": "ollama",
+      "model": "llama3.1",
+      "base_url": "http://localhost:11434",
+      "timeout_seconds": 120
+    },
+    {
+      "name": "ollama-coder",
+      "backend": "ollama",
+      "model": "qwen2.5-coder",
+      "base_url": "http://localhost:11434",
+      "timeout_seconds": 120
+    }
+  ],
+  "roles": [
+    {
+      "name": "planner",
+      "model": "ollama-general",
+      "system_prompt": "You are a planning agent. Break down the task and identify risks.",
+      "keywords": ["計画", "設計", "plan", "design", "architecture"],
+      "always_include": true
+    },
+    {
+      "name": "coder",
+      "model": "ollama-coder",
+      "system_prompt": "You are a coding agent. Propose concrete implementation steps.",
+      "keywords": ["実装", "コード", "code", "implement", "bug", "test"]
+    },
+    {
+      "name": "reviewer",
+      "model": "ollama-general",
+      "system_prompt": "You are a reviewer. Check correctness, security, and operational risks.",
+      "keywords": ["レビュー", "検証", "review", "security", "risk"]
+    },
+    {
+      "name": "synthesizer",
+      "model": "ollama-general",
+      "system_prompt": "You are a synthesis agent. Merge worker outputs into one concise answer.",
+      "is_synthesizer": true
+    }
+  ],
+  "orchestrator": {
+    "selection_policy": "keyword",
+    "max_parallel_workers": 4,
+    "temperature": 0.2
+  }
+}
+

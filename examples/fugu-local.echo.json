@@ -1,0 +1,47 @@
+{
+  "models": [
+    {
+      "name": "echo-general",
+      "backend": "echo",
+      "model": "general-local-mock"
+    },
+    {
+      "name": "echo-coder",
+      "backend": "echo",
+      "model": "coder-local-mock"
+    }
+  ],
+  "roles": [
+    {
+      "name": "planner",
+      "model": "echo-general",
+      "system_prompt": "You are a planning agent. Break down the task and identify risks.",
+      "keywords": ["計画", "設計", "plan", "design", "architecture"],
+      "always_include": true
+    },
+    {
+      "name": "coder",
+      "model": "echo-coder",
+      "system_prompt": "You are a coding agent. Propose concrete implementation steps.",
+      "keywords": ["実装", "コード", "code", "implement", "bug", "test"]
+    },
+    {
+      "name": "reviewer",
+      "model": "echo-general",
+      "system_prompt": "You are a reviewer. Check correctness, security, and operational risks.",
+      "keywords": ["レビュー", "検証", "review", "security", "risk"]
+    },
+    {
+      "name": "synthesizer",
+      "model": "echo-general",
+      "system_prompt": "You are a synthesis agent. Merge worker outputs into one concise answer.",
+      "is_synthesizer": true
+    }
+  ],
+  "orchestrator": {
+    "selection_policy": "keyword",
+    "max_parallel_workers": 4,
+    "temperature": 0.2
+  }
+}
+

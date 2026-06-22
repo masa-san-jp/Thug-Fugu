@@ -1,0 +1,47 @@
+{
+  "models": [
+    {
+      "name": "lmstudio-general",
+      "backend": "openai-compatible",
+      "model": "local-general-model",
+      "base_url": "http://localhost:1234",
+      "api_key": "not-needed",
+      "timeout_seconds": 120
+    },
+    {
+      "name": "lmstudio-coder",
+      "backend": "openai-compatible",
+      "model": "local-coder-model",
+      "base_url": "http://localhost:1234",
+      "api_key": "not-needed",
+      "timeout_seconds": 120
+    }
+  ],
+  "roles": [
+    {
+      "name": "planner",
+      "model": "lmstudio-general",
+      "system_prompt": "You are a planning agent. Break down the task and identify risks.",
+      "keywords": ["計画", "設計", "plan", "design", "architecture"],
+      "always_include": true
+    },
+    {
+      "name": "coder",
+      "model": "lmstudio-coder",
+      "system_prompt": "You are a coding agent. Propose concrete implementation steps.",
+      "keywords": ["実装", "コード", "code", "implement", "bug", "test"]
+    },
+    {
+      "name": "synthesizer",
+      "model": "lmstudio-general",
+      "system_prompt": "You are a synthesis agent. Merge worker outputs into one concise answer.",
+      "is_synthesizer": true
+    }
+  ],
+  "orchestrator": {
+    "selection_policy": "keyword",
+    "max_parallel_workers": 4,
+    "temperature": 0.2
+  }
+}
+
