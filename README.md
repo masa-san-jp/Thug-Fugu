@@ -71,7 +71,8 @@ PYTHONPATH=src python3 -m fugu_local run \
 
 ```bash
 PYTHONPATH=src python3 -m fugu_local serve \
-  --config examples/fugu-local.ollama.json --host 127.0.0.1 --port 8080
+  --config examples/fugu-local.ollama.json --host 127.0.0.1 --port 8080 \
+  --max-concurrent-requests 8   # 同時処理の上限。超過時は HTTP 429。/health に現在の上限を表示
 
 curl -s http://127.0.0.1:8080/v1/chat/completions \
   -H 'content-type: application/json' \
@@ -118,7 +119,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 ### selection_policy の挙動
 
 - **`all`**（既定）：synthesizer 以外の全 worker ロールを実行。
-- **`keyword`**：`always_include` のロール＋ユーザー入力に `keywords` のいずれかが（大文字小文字を無視して）含まれるロールを実行。**1 つも一致しなければ先頭の worker ロールにフォールバック**する。
+- **`keyword`**：`always_include` のロール＋**最新のユーザーメッセージ**に `keywords` のいずれかが（大文字小文字を無視して）含まれるロールを実行（過去の assistant / system メッセージは選抜に影響しない）。**1 つも一致しなければ先頭の worker ロールにフォールバック**する。
 
 ### バリデーション
 

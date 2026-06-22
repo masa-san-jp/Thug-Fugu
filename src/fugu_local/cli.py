@@ -9,7 +9,7 @@ from typing import Optional
 from .backends import ChatMessage
 from .config import ConfigError, load_config
 from .orchestrator import FuguLocalOrchestrator, OrchestrationError
-from .server import serve
+from .server import DEFAULT_MAX_CONCURRENT_REQUESTS, serve
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -29,6 +29,12 @@ def main(argv: Optional[list] = None) -> int:
     serve_parser.add_argument("--config", required=True, help="Path to JSON config")
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8080)
+    serve_parser.add_argument(
+        "--max-concurrent-requests",
+        type=int,
+        default=DEFAULT_MAX_CONCURRENT_REQUESTS,
+        help="Maximum concurrent chat completion requests before returning HTTP 429",
+    )
 
     validate_parser = subparsers.add_parser("validate-config", help="Validate config and exit")
     validate_parser.add_argument("--config", required=True, help="Path to JSON config")
@@ -49,7 +55,15 @@ def main(argv: Optional[list] = None) -> int:
         return 0
 
     if args.command == "serve":
-        serve(config, host=args.host, port=args.port)
+        if args.max_concurrent_requests <= 0:
+            print("--max-concurrent-requests must be positive", file=sys.stderr)
+            return 2
+        serve(
+            config,
+            host=args.host,
+            port=args.port,
+            max_concurrent_requests=args.max_concurrent_requests,
+        )
         return 0
 
     if args.command == "run":
