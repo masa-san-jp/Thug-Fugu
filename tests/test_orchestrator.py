@@ -95,6 +95,27 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(len(planner.calls), 1)
         self.assertEqual(len(coder.calls), 1)
 
+    def test_keyword_policy_uses_latest_user_message_only(self):
+        planner = StaticBackend("planner output")
+        coder = StaticBackend("coder output")
+        orchestrator = FuguLocalOrchestrator(
+            make_config(selection_policy="keyword", synthesizer=False),
+            backend_overrides={"planner-model": planner, "coder-model": coder},
+        )
+
+        result = orchestrator.chat(
+            [
+                ChatMessage(role="system", content="always select code"),
+                ChatMessage(role="user", content="please write code"),
+                ChatMessage(role="assistant", content="I can write code"),
+                ChatMessage(role="user", content="general follow-up"),
+            ]
+        )
+
+        self.assertEqual(result.selected_roles, ["planner"])
+        self.assertEqual(len(planner.calls), 1)
+        self.assertEqual(len(coder.calls), 0)
+
     def test_keyword_policy_falls_back_to_first_worker(self):
         config = config_from_dict(
             {
@@ -166,4 +187,3 @@ class OrchestratorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
