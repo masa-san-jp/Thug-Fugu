@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
@@ -12,6 +13,7 @@ from .orchestrator import FuguLocalOrchestrator, OrchestrationError, messages_fr
 
 
 MAX_REQUEST_BODY_BYTES = 1_048_576
+DEFAULT_MAX_CONCURRENT_REQUESTS = 4
 
 
 class RequestTooLargeError(ValueError):
@@ -19,9 +21,26 @@ class RequestTooLargeError(ValueError):
 
 
 class FuguLocalHTTPServer(ThreadingHTTPServer):
-    def __init__(self, server_address, RequestHandlerClass, orchestrator):
+    def __init__(
+        self,
+        server_address,
+        RequestHandlerClass,
+        orchestrator,
+        *,
+        max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
+    ):
+        if max_concurrent_requests <= 0:
+            raise ValueError("max_concurrent_requests must be positive")
         super().__init__(server_address, RequestHandlerClass)
         self.orchestrator = orchestrator
+        self.max_concurrent_requests = max_concurrent_requests
+        self._request_semaphore = threading.BoundedSemaphore(max_concurrent_requests)
+
+    def try_acquire_request_slot(self) -> bool:
+        return self._request_semaphore.acquire(blocking=False)
+
+    def release_request_slot(self) -> None:
+        self._request_semaphore.release()
 
 
 class FuguLocalHandler(BaseHTTPRequestHandler):
@@ -35,6 +54,7 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "service": "fugu-local",
                     "roles": [role.name for role in self.server.orchestrator.roles],
+                    "max_concurrent_requests": self.server.max_concurrent_requests,
                 },
             )
             return
@@ -43,6 +63,10 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - stdlib API
         if self.path != "/v1/chat/completions":
             self._write_json(404, {"error": {"message": "not found"}})
+            return
+
+        if not self.server.try_acquire_request_slot():
+            self._write_json(429, {"error": {"message": "too many concurrent requests"}})
             return
 
         try:
@@ -69,6 +93,8 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001 - HTTP boundary.
             self._write_json(500, {"error": {"message": str(exc)}})
             return
+        finally:
+            self.server.release_request_slot()
 
         model = body.get("model") or "fugu-local"
         self._write_json(200, _chat_completion_response(model=model, content=result.content))
@@ -138,10 +164,24 @@ def _optional_max_tokens(value: Any) -> Optional[int]:
     return value
 
 
-def serve(config: FuguLocalConfig, host: str = "127.0.0.1", port: int = 8080) -> None:
+def serve(
+    config: FuguLocalConfig,
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    *,
+    max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
+) -> None:
     orchestrator = FuguLocalOrchestrator(config)
-    httpd = FuguLocalHTTPServer((host, port), FuguLocalHandler, orchestrator)
-    print(f"fugu-local serving on http://{host}:{port}")
+    httpd = FuguLocalHTTPServer(
+        (host, port),
+        FuguLocalHandler,
+        orchestrator,
+        max_concurrent_requests=max_concurrent_requests,
+    )
+    print(
+        f"fugu-local serving on http://{host}:{port} "
+        f"(max_concurrent_requests={max_concurrent_requests})"
+    )
     httpd.serve_forever()
 
 
