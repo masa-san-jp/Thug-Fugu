@@ -53,7 +53,62 @@ class ConfigTests(unittest.TestCase):
                 }
             )
 
+    def test_rejects_string_boolean_fields(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [
+                        {"name": "planner", "model": "m", "always_include": "false"}
+                    ],
+                }
+            )
+
+    def test_rejects_string_numeric_fields(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [
+                        {
+                            "name": "m",
+                            "backend": "echo",
+                            "model": "mock",
+                            "timeout_seconds": "120",
+                        }
+                    ],
+                    "roles": [{"name": "planner", "model": "m"}],
+                }
+            )
+
+    def test_rejects_boolean_integer_fields(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [{"name": "planner", "model": "m"}],
+                    "orchestrator": {"max_parallel_workers": True},
+                }
+            )
+
+    def test_accepts_integer_temperature_and_timeout(self):
+        config = config_from_dict(
+            {
+                "models": [
+                    {
+                        "name": "m",
+                        "backend": "echo",
+                        "model": "mock",
+                        "timeout_seconds": 30,
+                    }
+                ],
+                "roles": [{"name": "planner", "model": "m"}],
+                "orchestrator": {"temperature": 1},
+            }
+        )
+
+        self.assertEqual(config.models[0].timeout_seconds, 30.0)
+        self.assertEqual(config.orchestrator.temperature, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
-

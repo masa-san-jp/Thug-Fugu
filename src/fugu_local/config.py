@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -124,7 +125,7 @@ def _model_from_dict(raw: Any) -> ModelConfig:
         model=_required_str(obj, "model"),
         base_url=_optional_str(obj, "base_url"),
         api_key=_expand_optional_env(_optional_str(obj, "api_key")),
-        timeout_seconds=float(obj.get("timeout_seconds", 120.0)),
+        timeout_seconds=_optional_number(obj, "timeout_seconds", default=120.0),
     )
 
 
@@ -138,10 +139,10 @@ def _role_from_dict(raw: Any) -> RoleConfig:
     return RoleConfig(
         name=_required_str(obj, "name"),
         model=_required_str(obj, "model"),
-        system_prompt=str(obj.get("system_prompt", "")),
+        system_prompt=_optional_str(obj, "system_prompt") or "",
         keywords=list(keywords_raw),
-        always_include=bool(obj.get("always_include", False)),
-        is_synthesizer=bool(obj.get("is_synthesizer", False)),
+        always_include=_optional_bool(obj, "always_include", default=False),
+        is_synthesizer=_optional_bool(obj, "is_synthesizer", default=False),
     )
 
 
@@ -149,12 +150,11 @@ def _orchestrator_from_dict(raw: Any) -> OrchestratorConfig:
     if raw is None:
         raw = {}
     obj = _required_object(raw, "orchestrator")
-    max_tokens = obj.get("max_tokens")
     return OrchestratorConfig(
-        selection_policy=str(obj.get("selection_policy", "all")),
-        max_parallel_workers=int(obj.get("max_parallel_workers", 4)),
-        temperature=float(obj.get("temperature", 0.2)),
-        max_tokens=int(max_tokens) if max_tokens is not None else None,
+        selection_policy=_optional_str(obj, "selection_policy") or "all",
+        max_parallel_workers=_optional_int(obj, "max_parallel_workers", default=4),
+        temperature=_optional_number(obj, "temperature", default=0.2),
+        max_tokens=_optional_int(obj, "max_tokens", default=None),
     )
 
 
@@ -187,6 +187,32 @@ def _optional_str(raw: Mapping[str, Any], key: str) -> Optional[str]:
     return value
 
 
+def _optional_bool(raw: Mapping[str, Any], key: str, *, default: bool) -> bool:
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"'{key}' must be a boolean when provided")
+    return value
+
+
+def _optional_int(raw: Mapping[str, Any], key: str, *, default: Optional[int]) -> Optional[int]:
+    value = raw.get(key, default)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"'{key}' must be an integer when provided")
+    return value
+
+
+def _optional_number(raw: Mapping[str, Any], key: str, *, default: float) -> float:
+    value = raw.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"'{key}' must be a number when provided")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ConfigError(f"'{key}' must be finite when provided")
+    return number
+
+
 def _expand_optional_env(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
@@ -203,4 +229,3 @@ def _ensure_unique(values: Iterable[str], label: str) -> set:
     if duplicates:
         raise ConfigError(f"Duplicate {label} name(s): {sorted(duplicates)}")
     return seen
-
