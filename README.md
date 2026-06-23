@@ -174,6 +174,21 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 
 ---
 
+## ログ / オブザーバビリティ
+
+- 各オーケストレーション実行に `run_id` が付与され、`fugu_local.orchestrator` ロガーが INFO で 1 行の構造化サマリ（run_id・総レイテンシ・選抜ロール・synthesizer・各ロールの model / ok / latency_ms / エラー要約）を出力します。
+- **プロンプト本文・生成結果はログに出しません**（既定で非機微）。同じレコードの詳細が要るときは当ロガーを `DEBUG` に上げてください。
+- 全ロール失敗時は `WARNING` にエラー要約を出します。
+- プログラムからは `OrchestrationResult.run_id` / `.latency_ms` と各 `WorkerResult.latency_ms` で計測値を取得できます。
+
+```python
+import logging
+logging.getLogger("fugu_local.orchestrator").setLevel(logging.INFO)  # 既定の構造化ログ
+# logging.getLogger("fugu_local.orchestrator").setLevel(logging.DEBUG)  # 詳細レコード
+```
+
+---
+
 ## トラブルシュート
 
 | 症状 | 原因 / 対処 |

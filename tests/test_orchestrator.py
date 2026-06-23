@@ -187,3 +187,25 @@ class OrchestratorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ObservabilityTest(unittest.TestCase):
+    def test_run_emits_nonsensitive_structured_log_with_timings(self):
+        orchestrator = FuguLocalOrchestrator(
+            make_config(selection_policy="all"),
+            backend_overrides={
+                "planner-model": StaticBackend("planner output"),
+                "coder-model": StaticBackend("coder output"),
+                "synth-model": StaticBackend("final output"),
+            },
+        )
+        with self.assertLogs("fugu_local.orchestrator", level="INFO") as cm:
+            result = orchestrator.chat(
+                [ChatMessage(role="user", content="TOP_SECRET_PROMPT")]
+            )
+        self.assertTrue(result.run_id)
+        self.assertIsNotNone(result.latency_ms)
+        self.assertTrue(all(w.latency_ms is not None for w in result.worker_results))
+        log_text = "\n".join(cm.output)
+        self.assertIn(result.run_id, log_text)
+        self.assertNotIn("TOP_SECRET_PROMPT", log_text)

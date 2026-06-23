@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
+import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
+
+logger = logging.getLogger("fugu_local.orchestrator")
 
 from .backends import (
     BackendError,
@@ -26,6 +31,7 @@ class WorkerResult:
     model: str
     content: str = ""
     error: Optional[str] = None
+    latency_ms: Optional[float] = None
 
     @property
     def ok(self) -> bool:
@@ -39,6 +45,8 @@ class OrchestrationResult:
     worker_results: List[WorkerResult] = field(default_factory=list)
     synthesizer_role: Optional[str] = None
     synthesis_error: Optional[str] = None
+    run_id: str = ""
+    latency_ms: Optional[float] = None
 
 
 class FuguLocalOrchestrator:
@@ -69,6 +77,9 @@ class FuguLocalOrchestrator:
         if not messages:
             raise OrchestrationError("At least one message is required")
 
+        run_id = uuid.uuid4().hex[:12]
+        started = time.perf_counter()
+
         user_text = _latest_user_message_text(messages)
         synthesizer = self._select_synthesizer()
         worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
@@ -86,9 +97,13 @@ class FuguLocalOrchestrator:
             errors = "; ".join(
                 f"{result.role}: {result.error}" for result in worker_results if result.error
             )
+            logger.warning("run %s: all worker roles failed: %s", run_id, errors)
             raise OrchestrationError(f"All worker roles failed: {errors}")
 
+        synthesizer_role: Optional[str] = None
+        synthesis_error: Optional[str] = None
         if synthesizer:
+            synthesizer_role = synthesizer.name
             try:
                 content = self._synthesize(
                     synthesizer,
@@ -97,26 +112,48 @@ class FuguLocalOrchestrator:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-                return OrchestrationResult(
-                    content=content,
-                    selected_roles=[role.name for role in selected_roles],
-                    worker_results=worker_results,
-                    synthesizer_role=synthesizer.name,
-                )
             except Exception as exc:  # noqa: BLE001 - synthesis is optional fallback path.
-                return OrchestrationResult(
-                    content=_deterministic_merge(worker_results),
-                    selected_roles=[role.name for role in selected_roles],
-                    worker_results=worker_results,
-                    synthesizer_role=synthesizer.name,
-                    synthesis_error=str(exc),
-                )
+                content = _deterministic_merge(worker_results)
+                synthesis_error = str(exc)
+        else:
+            content = _deterministic_merge(worker_results)
 
-        return OrchestrationResult(
-            content=_deterministic_merge(worker_results),
+        result = OrchestrationResult(
+            content=content,
             selected_roles=[role.name for role in selected_roles],
             worker_results=worker_results,
+            synthesizer_role=synthesizer_role,
+            synthesis_error=synthesis_error,
+            run_id=run_id,
+            latency_ms=round((time.perf_counter() - started) * 1000, 1),
         )
+        self._log_run(result)
+        return result
+
+    def _log_run(self, result: OrchestrationResult) -> None:
+        """Emit a concise, non-sensitive structured log of one run. Prompt and
+        completion content are deliberately excluded; only role/model/timing and
+        error summaries are logged. Enable DEBUG for the same record."""
+        roles = [
+            {
+                "role": w.role,
+                "model": w.model,
+                "ok": w.ok,
+                "latency_ms": w.latency_ms,
+                "error": w.error,
+            }
+            for w in result.worker_results
+        ]
+        record = {
+            "run_id": result.run_id,
+            "latency_ms": result.latency_ms,
+            "selected_roles": result.selected_roles,
+            "synthesizer_role": result.synthesizer_role,
+            "synthesis_error": result.synthesis_error,
+            "workers": roles,
+        }
+        logger.info("orchestration run %s", result.run_id, extra={"fugu_run": record})
+        logger.debug("orchestration run detail %s: %s", result.run_id, record)
 
     def _select_synthesizer(self) -> Optional[RoleConfig]:
         synthesizers = [role for role in self.config.roles if role.is_synthesizer]
@@ -188,11 +225,21 @@ class FuguLocalOrchestrator:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        response = self._backend_for_role(role).chat(request)
+        started = time.perf_counter()
+        try:
+            response = self._backend_for_role(role).chat(request)
+        except Exception as exc:  # noqa: BLE001 - keep role isolation; record timing.
+            return WorkerResult(
+                role=role.name,
+                model=role.model,
+                error=str(exc),
+                latency_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
         return WorkerResult(
             role=role.name,
             model=role.model,
             content=response.content,
+            latency_ms=round((time.perf_counter() - started) * 1000, 1),
         )
 
     def _synthesize(
