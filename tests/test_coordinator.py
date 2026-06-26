@@ -54,7 +54,8 @@ class CoordinatorTests(unittest.TestCase):
         )
 
         self.assertEqual(plan.pattern, "role_split")
-        self.assertEqual(plan.reason, "needs steps")
+        self.assertEqual(plan.reason, "meta-call selected role_split")
+        self.assertEqual(plan.raw["reason"], "needs steps")
         self.assertEqual(plan.source, "meta")
         self.assertEqual(plan.ensemble_n, 2)
         self.assertEqual(plan.ensemble_vote, "majority")

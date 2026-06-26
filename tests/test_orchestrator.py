@@ -353,3 +353,35 @@ class CoordinatorDispatchTests(unittest.TestCase):
 
         self.assertEqual(result.pattern, "parallel_ensemble")
         self.assertEqual(result.plan_source, "meta")
+
+
+class CoordinatorObservabilityTests(unittest.TestCase):
+    def test_meta_reason_is_not_logged_even_if_it_echoes_prompt(self):
+        secret = "TOP_SECRET_PROMPT"
+        config = make_coordinator_config(
+            {
+                "enabled": True,
+                "meta_model": "planner-model",
+                "default_pattern": "role_split",
+            }
+        )
+        meta_backend = StaticMetaBackend(
+            '{"pattern":"direct","reason":"because user said TOP_SECRET_PROMPT"}'
+        )
+        orchestrator = FuguLocalOrchestrator(
+            config,
+            backend_overrides={
+                "planner-model": meta_backend,
+                "synth-model": StaticBackend("synth"),
+            },
+        )
+
+        with self.assertLogs("fugu_local.orchestrator", level="INFO") as cm:
+            result = orchestrator.chat([ChatMessage(role="user", content=secret + ("x" * 90))])
+
+        self.assertEqual(result.pattern, "direct")
+        self.assertEqual(result.plan_source, "meta")
+        self.assertEqual(result.plan_reason, "meta-call selected direct")
+        log_text = "\n".join(cm.output)
+        self.assertNotIn(secret, log_text)
+        self.assertNotIn("because user said", log_text)

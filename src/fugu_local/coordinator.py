@@ -174,10 +174,14 @@ class Coordinator:
         pattern = parsed.get("pattern")
         if pattern not in SUPPORTED_PATTERNS:
             return None
-        reason = parsed.get("reason")
+        # Keep model-generated reason out of Plan.reason because Plan.reason is included
+        # in non-sensitive structured logs. A meta model can accidentally echo user
+        # prompts, generated content, or other sensitive data in its reason field.
+        # Preserve the raw parsed object for programmatic inspection while exposing only
+        # a deterministic, non-sensitive summary in the public plan/log surface.
         return Plan(
             pattern=pattern,
-            reason=reason if isinstance(reason, str) and reason else "meta-call decision",
+            reason=f"meta-call selected {pattern}",
             source="meta",
             ensemble_n=self.config.ensemble.n,
             ensemble_vote=self.config.ensemble.vote,
