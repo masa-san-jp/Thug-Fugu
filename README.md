@@ -220,10 +220,25 @@ logging.getLogger("fugu_local.orchestrator").setLevel(logging.INFO)  # 既定の
 
 ---
 
-## テスト
+## テスト / 品質チェック
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+開発用ツールを入れる場合:
+
+```bash
+python3 -m pip install -e '.[dev]'
+```
+
+CI と同等の品質チェック:
+
+```bash
+python3 -m ruff check src tests
+python3 -m ruff format --check src tests
+PYTHONPATH=src python3 -m coverage run -m unittest discover -s tests -v
+python3 -m coverage report --fail-under=80
 ```
 
 `echo` backend を使えば実 LLM なしでオーケストレーションの配線をテストできます。

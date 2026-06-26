@@ -12,7 +12,6 @@ from typing import Any, Dict, Optional
 from .config import FuguLocalConfig
 from .orchestrator import FuguLocalOrchestrator, OrchestrationError, messages_from_dicts
 
-
 MAX_REQUEST_BODY_BYTES = 1_048_576
 DEFAULT_MAX_CONCURRENT_REQUESTS = 4
 

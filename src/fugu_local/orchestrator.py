@@ -9,16 +9,15 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
-logger = logging.getLogger("fugu_local.orchestrator")
-
 from .backends import (
-    BackendError,
     ChatMessage,
     ChatRequest,
     LLMBackend,
     build_backend,
 )
 from .config import FuguLocalConfig, ModelConfig, RoleConfig
+
+logger = logging.getLogger("fugu_local.orchestrator")
 
 
 class OrchestrationError(RuntimeError):
