@@ -45,6 +45,7 @@ class OrchestratorConfig:
     max_parallel_workers: int = 4
     temperature: float = 0.2
     max_tokens: Optional[int] = None
+    request_timeout_seconds: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,11 @@ def validate_config(config: FuguLocalConfig) -> None:
         raise ConfigError("max_parallel_workers must be positive")
     if config.orchestrator.max_tokens is not None and config.orchestrator.max_tokens <= 0:
         raise ConfigError("max_tokens must be positive when provided")
+    if (
+        config.orchestrator.request_timeout_seconds is not None
+        and config.orchestrator.request_timeout_seconds <= 0
+    ):
+        raise ConfigError("request_timeout_seconds must be positive when provided")
 
     _validate_coordinator(config, model_names)
 
@@ -188,6 +194,7 @@ def _orchestrator_from_dict(raw: Any) -> OrchestratorConfig:
         max_parallel_workers=_optional_int(obj, "max_parallel_workers", default=4),
         temperature=_optional_number(obj, "temperature", default=0.2),
         max_tokens=_optional_int(obj, "max_tokens", default=None),
+        request_timeout_seconds=_optional_positive_number(obj, "request_timeout_seconds"),
     )
 
 
@@ -311,6 +318,18 @@ def _optional_int(raw: Mapping[str, Any], key: str, *, default: Optional[int]) -
 
 def _optional_number(raw: Mapping[str, Any], key: str, *, default: float) -> float:
     value = raw.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"'{key}' must be a number when provided")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ConfigError(f"'{key}' must be finite when provided")
+    return number
+
+
+def _optional_positive_number(raw: Mapping[str, Any], key: str) -> Optional[float]:
+    value = raw.get(key)
+    if value is None:
+        return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"'{key}' must be a number when provided")
     number = float(value)

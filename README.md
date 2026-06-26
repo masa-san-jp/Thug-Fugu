@@ -118,15 +118,24 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 | `max_parallel_workers` | int | `4` | 並列ワーカー数の上限（> 0） |
 | `temperature` | number | `0.2` | 生成温度 |
 | `max_tokens` | int? | `null` | 生成トークン上限（指定時は > 0） |
+| `request_timeout_seconds` | number? | `null` | リクエスト全体のデッドライン秒（指定時は > 0）。各ロールの `timeout_seconds` とは別軸 |
 
 ### selection_policy の挙動
 
 - **`all`**（既定）：synthesizer 以外の全 worker ロールを実行。
 - **`keyword`**：`always_include` のロール＋**最新のユーザーメッセージ**に `keywords` のいずれかが（大文字小文字を無視して）含まれるロールを実行（過去の assistant / system メッセージは選抜に影響しない）。**1 つも一致しなければ先頭の worker ロールにフォールバック**する。
 
+### request_timeout_seconds（リクエストデッドライン）
+
+- `orchestrator.request_timeout_seconds` を指定すると、**リクエスト全体の上限時間**を設けます。各ロールの `timeout_seconds`（バックエンド単位）とは別軸で、user から見た総レイテンシを制御します。
+- デッドライン到達時は未完了の worker を待たずに打ち切り、`WorkerResult.timed_out=true`・`error` 付きで結果に残します（バックグラウンドの呼び出しは各自の `timeout_seconds` で終了）。
+- **1 つでも成功していれば**、その時点の出力で合成（または決定論マージ）して返します。デッドラインを過ぎている場合は synthesizer 呼び出しをスキップして即時にマージします。
+- **全 worker がデッドラインに間に合わなければ** `OrchestrationError` を送出します。
+- 未指定（既定）なら従来どおりデッドラインなしで全 worker を待ちます。
+
 ### バリデーション
 
-models / roles が各 1 件以上、名前が一意、`backend` がサポート対象、`timeout_seconds` > 0、`ollama`/`openai-compatible` は `base_url` 必須、`roles[].model` が実在、`selection_policy` がサポート対象、`max_parallel_workers` > 0、`max_tokens`（指定時）> 0。違反は `ConfigError`。
+models / roles が各 1 件以上、名前が一意、`backend` がサポート対象、`timeout_seconds` > 0、`ollama`/`openai-compatible` は `base_url` 必須、`roles[].model` が実在、`selection_policy` がサポート対象、`max_parallel_workers` > 0、`max_tokens`（指定時）> 0、`request_timeout_seconds`（指定時）> 0。違反は `ConfigError`。
 
 ---
 
