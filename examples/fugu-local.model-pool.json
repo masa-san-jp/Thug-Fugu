@@ -1,0 +1,50 @@
+{
+  "model_pools": [
+    {
+      "name": "fast-pool",
+      "backend": "ollama",
+      "model": "gpt-oss:20b",
+      "endpoints": [
+        "http://127.0.0.1:11434",
+        "http://127.0.0.1:11435"
+      ],
+      "policy": "least_busy",
+      "timeout_seconds": 300
+    }
+  ],
+  "models": [
+    {
+      "name": "synth",
+      "backend": "ollama",
+      "model": "gpt-oss:20b",
+      "base_url": "http://127.0.0.1:11434",
+      "timeout_seconds": 300
+    }
+  ],
+  "roles": [
+    {
+      "name": "thinker",
+      "model": "fast-pool",
+      "system_prompt": "あなたは計画担当。タスクを分解し方針とリスクを簡潔に示す。",
+      "always_include": true
+    },
+    {
+      "name": "reviewer",
+      "model": "fast-pool",
+      "system_prompt": "あなたは検証担当。別視点で正しさと抜けを簡潔に点検する。",
+      "always_include": true
+    },
+    {
+      "name": "synthesizer",
+      "model": "synth",
+      "system_prompt": "あなたは統合担当。worker 出力を1つの簡潔な回答にまとめる。",
+      "is_synthesizer": true
+    }
+  ],
+  "orchestrator": {
+    "selection_policy": "all",
+    "max_parallel_workers": 2,
+    "temperature": 0.2,
+    "request_timeout_seconds": 180
+  }
+}

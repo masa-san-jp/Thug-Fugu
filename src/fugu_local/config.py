@@ -13,6 +13,8 @@ SUPPORTED_BACKENDS = {"ollama", "openai-compatible", "echo"}
 SUPPORTED_SELECTION_POLICIES = {"all", "keyword"}
 SUPPORTED_PATTERNS = {"direct", "role_split", "parallel_ensemble"}
 SUPPORTED_ENSEMBLE_VOTES = {"synth", "majority"}
+SUPPORTED_POOL_POLICIES = {"round_robin", "least_busy"}
+HTTP_BACKENDS = {"ollama", "openai-compatible"}
 
 
 class ConfigError(ValueError):
@@ -25,6 +27,17 @@ class ModelConfig:
     backend: str
     model: str
     base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    timeout_seconds: float = 120.0
+
+
+@dataclass(frozen=True)
+class ModelPoolConfig:
+    name: str
+    backend: str
+    model: str
+    endpoints: List[str]
+    policy: str = "round_robin"
     api_key: Optional[str] = None
     timeout_seconds: float = 120.0
 
@@ -77,9 +90,16 @@ class FuguLocalConfig:
     roles: List[RoleConfig]
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     coordinator: CoordinatorConfig = field(default_factory=CoordinatorConfig)
+    model_pools: List[ModelPoolConfig] = field(default_factory=list)
 
     def model_by_name(self) -> Dict[str, ModelConfig]:
         return {model.name: model for model in self.models}
+
+    def pool_by_name(self) -> Dict[str, ModelPoolConfig]:
+        return {pool.name: pool for pool in self.model_pools}
+
+    def target_names(self) -> set:
+        return {model.name for model in self.models} | {pool.name for pool in self.model_pools}
 
 
 def load_config(path: str) -> FuguLocalConfig:
@@ -104,11 +124,13 @@ def config_from_dict(raw: Mapping[str, Any]) -> FuguLocalConfig:
     roles = [_role_from_dict(item) for item in _required_list(raw, "roles")]
     orchestrator = _orchestrator_from_dict(raw.get("orchestrator", {}))
     coordinator = _coordinator_from_dict(raw.get("coordinator", {}))
+    model_pools = [_model_pool_from_dict(item) for item in _optional_list(raw, "model_pools")]
     config = FuguLocalConfig(
         models=models,
         roles=roles,
         orchestrator=orchestrator,
         coordinator=coordinator,
+        model_pools=model_pools,
     )
     validate_config(config)
     return config
@@ -121,6 +143,13 @@ def validate_config(config: FuguLocalConfig) -> None:
         raise ConfigError("At least one role is required")
 
     model_names = _ensure_unique([model.name for model in config.models], "model")
+    pool_names = _ensure_unique([pool.name for pool in config.model_pools], "model pool")
+    overlap = model_names & pool_names
+    if overlap:
+        raise ConfigError(
+            f"model and model_pool names must be unique; duplicates: {sorted(overlap)}"
+        )
+    target_names = model_names | pool_names
     _ensure_unique([role.name for role in config.roles], "role")
 
     for model in config.models:
@@ -135,8 +164,10 @@ def validate_config(config: FuguLocalConfig) -> None:
             raise ConfigError(f"base_url is required for backend '{model.backend}'")
 
     for role in config.roles:
-        if role.model not in model_names:
-            raise ConfigError(f"Role '{role.name}' references unknown model '{role.model}'")
+        if role.model not in target_names:
+            raise ConfigError(f"Role '{role.name}' references unknown model or pool '{role.model}'")
+
+    _validate_model_pools(config)
 
     if config.orchestrator.selection_policy not in SUPPORTED_SELECTION_POLICIES:
         raise ConfigError(
@@ -262,6 +293,42 @@ def _validate_coordinator(config: FuguLocalConfig, model_names: set) -> None:
             f"Unsupported coordinator.ensemble.vote '{coordinator.ensemble.vote}'. "
             f"Supported: {sorted(SUPPORTED_ENSEMBLE_VOTES)}"
         )
+
+
+def _model_pool_from_dict(raw: Any) -> ModelPoolConfig:
+    obj = _required_object(raw, "model_pool entry")
+    endpoints_raw = obj.get("endpoints")
+    if not isinstance(endpoints_raw, list) or not all(
+        isinstance(item, str) and item.strip() for item in endpoints_raw
+    ):
+        raise ConfigError("model_pool.endpoints must be a non-empty list of URL strings")
+    return ModelPoolConfig(
+        name=_required_str(obj, "name"),
+        backend=_required_str(obj, "backend"),
+        model=_required_str(obj, "model"),
+        endpoints=list(endpoints_raw),
+        policy=_optional_str(obj, "policy") or "round_robin",
+        api_key=_expand_optional_env(_optional_str(obj, "api_key")),
+        timeout_seconds=_optional_number(obj, "timeout_seconds", default=120.0),
+    )
+
+
+def _validate_model_pools(config: FuguLocalConfig) -> None:
+    for pool in config.model_pools:
+        if pool.backend not in HTTP_BACKENDS:
+            raise ConfigError(
+                f"Unsupported backend '{pool.backend}' for model_pool '{pool.name}'. "
+                f"Supported: {sorted(HTTP_BACKENDS)}"
+            )
+        if not pool.endpoints:
+            raise ConfigError(f"model_pool '{pool.name}' must have at least one endpoint")
+        if pool.policy not in SUPPORTED_POOL_POLICIES:
+            raise ConfigError(
+                f"Unsupported policy '{pool.policy}' for model_pool '{pool.name}'. "
+                f"Supported: {sorted(SUPPORTED_POOL_POLICIES)}"
+            )
+        if pool.timeout_seconds <= 0:
+            raise ConfigError(f"timeout_seconds must be positive for model_pool '{pool.name}'")
 
 
 def _optional_list(raw: Mapping[str, Any], key: str) -> List[Any]:

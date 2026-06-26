@@ -197,3 +197,73 @@ class RequestTimeoutConfigTests(unittest.TestCase):
                     "orchestrator": {"request_timeout_seconds": 0},
                 }
             )
+
+
+class ModelPoolConfigTests(unittest.TestCase):
+    def _with_pool(self, pool):
+        return {
+            "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+            "model_pools": [pool],
+            "roles": [{"name": "worker", "model": "fast"}],
+        }
+
+    def test_accepts_pool_and_role_reference(self):
+        config = config_from_dict(
+            self._with_pool(
+                {
+                    "name": "fast",
+                    "backend": "ollama",
+                    "model": "gpt-oss:20b",
+                    "endpoints": ["http://127.0.0.1:11434", "http://127.0.0.1:11435"],
+                    "policy": "least_busy",
+                }
+            )
+        )
+
+        self.assertEqual(config.model_pools[0].name, "fast")
+        self.assertEqual(config.model_pools[0].policy, "least_busy")
+        self.assertEqual(len(config.model_pools[0].endpoints), 2)
+
+    def test_rejects_pool_without_endpoints(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._with_pool(
+                    {
+                        "name": "fast",
+                        "backend": "ollama",
+                        "model": "gpt-oss:20b",
+                        "endpoints": [],
+                    }
+                )
+            )
+
+    def test_rejects_pool_unknown_policy(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._with_pool(
+                    {
+                        "name": "fast",
+                        "backend": "ollama",
+                        "model": "gpt-oss:20b",
+                        "endpoints": ["http://127.0.0.1:11434"],
+                        "policy": "magic",
+                    }
+                )
+            )
+
+    def test_rejects_name_collision_between_model_and_pool(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "dup", "backend": "echo", "model": "mock"}],
+                    "model_pools": [
+                        {
+                            "name": "dup",
+                            "backend": "ollama",
+                            "model": "gpt-oss:20b",
+                            "endpoints": ["http://127.0.0.1:11434"],
+                        }
+                    ],
+                    "roles": [{"name": "worker", "model": "dup"}],
+                }
+            )
