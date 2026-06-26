@@ -12,6 +12,7 @@ double-maintenance of ports and model names.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from typing import List, Optional
 from urllib.parse import urlsplit
@@ -91,13 +92,15 @@ def render_ollama_commands(
             f"render_ollama_commands only supports ollama endpoints, got {endpoint.backend}"
         )
 
-    env = f"OLLAMA_HOST={endpoint.host_port}"
+    if num_parallel is not None and num_parallel <= 0:
+        raise ValueError("num_parallel must be positive when provided")
+
+    host = shlex.quote(endpoint.host_port)
+    env = f"OLLAMA_HOST={host}"
     if num_parallel is not None:
-        if num_parallel <= 0:
-            raise ValueError("num_parallel must be positive when provided")
         env += f" OLLAMA_NUM_PARALLEL={num_parallel}"
 
     commands = [f"{env} ollama serve"]
     for model in endpoint.models:
-        commands.append(f"OLLAMA_HOST={endpoint.host_port} ollama pull {model}")
+        commands.append(f"OLLAMA_HOST={host} ollama pull {shlex.quote(model)}")
     return commands

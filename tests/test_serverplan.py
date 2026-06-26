@@ -1,3 +1,4 @@
+import shlex
 import unittest
 
 from fugu_local.config import config_from_dict
@@ -119,6 +120,30 @@ class ServerPlanTests(unittest.TestCase):
         self.assertEqual(
             commands[1],
             "OLLAMA_HOST=127.0.0.1:11434 ollama pull gpt-oss:20b",
+        )
+
+    def test_render_ollama_commands_quotes_shell_metacharacters(self):
+        config = _config(
+            [
+                {
+                    "name": "a",
+                    "backend": "ollama",
+                    "model": "bad; echo pwned",
+                    "base_url": "http://127.0.0.1:11434",
+                }
+            ]
+        )
+        endpoint = derive_server_plan(config)[0]
+
+        commands = render_ollama_commands(endpoint)
+
+        pull = commands[1]
+        # The payload must be a single quoted argument, never a separate shell command.
+        self.assertIn(shlex.quote("bad; echo pwned"), pull)
+        # shlex tokenization proves it is one argument, not an injected command chain.
+        tokens = shlex.split(pull)
+        self.assertEqual(
+            tokens, ["OLLAMA_HOST=127.0.0.1:11434", "ollama", "pull", "bad; echo pwned"]
         )
 
     def test_render_ollama_commands_rejects_non_positive_parallel(self):
