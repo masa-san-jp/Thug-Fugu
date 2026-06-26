@@ -1,0 +1,41 @@
+{
+  "models": [
+    {
+      "name": "echo-general",
+      "backend": "echo",
+      "model": "general-local-mock"
+    },
+    {
+      "name": "echo-synth",
+      "backend": "echo",
+      "model": "synth-local-mock"
+    }
+  ],
+  "roles": [
+    {
+      "name": "thinker",
+      "model": "echo-general",
+      "system_prompt": "You are a thinker. Break the task down and identify the best path."
+    },
+    {
+      "name": "synthesizer",
+      "model": "echo-synth",
+      "system_prompt": "You are a synthesizer. Merge candidates into one final answer.",
+      "is_synthesizer": true
+    }
+  ],
+  "coordinator": {
+    "enabled": true,
+    "default_pattern": "role_split",
+    "rules": [
+      {"match": ["比較", "複数案", "compare", "options"], "pattern": "parallel_ensemble"},
+      {"match": ["短く", "一言", "simple"], "pattern": "direct"}
+    ],
+    "ensemble": {"n": 3, "vote": "synth"}
+  },
+  "orchestrator": {
+    "selection_policy": "all",
+    "max_parallel_workers": 4,
+    "temperature": 0.2
+  }
+}
