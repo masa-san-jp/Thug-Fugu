@@ -110,3 +110,57 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CoordinatorConfigTests(unittest.TestCase):
+    def test_accepts_disabled_default_coordinator_for_backward_compatibility(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+
+        self.assertFalse(config.coordinator.enabled)
+        self.assertEqual(config.coordinator.default_pattern, "role_split")
+
+    def test_accepts_enabled_coordinator_rules_and_ensemble(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+                "coordinator": {
+                    "enabled": True,
+                    "meta_model": "m",
+                    "default_pattern": "direct",
+                    "rules": [{"match": ["compare", "比較"], "pattern": "parallel_ensemble"}],
+                    "ensemble": {"n": 2, "vote": "majority"},
+                },
+            }
+        )
+
+        self.assertTrue(config.coordinator.enabled)
+        self.assertEqual(config.coordinator.meta_model, "m")
+        self.assertEqual(config.coordinator.rules[0].pattern, "parallel_ensemble")
+        self.assertEqual(config.coordinator.ensemble.n, 2)
+        self.assertEqual(config.coordinator.ensemble.vote, "majority")
+
+    def test_rejects_unknown_coordinator_pattern(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [{"name": "planner", "model": "m"}],
+                    "coordinator": {"default_pattern": "magic"},
+                }
+            )
+
+    def test_rejects_unknown_meta_model(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [{"name": "planner", "model": "m"}],
+                    "coordinator": {"enabled": True, "meta_model": "missing"},
+                }
+            )

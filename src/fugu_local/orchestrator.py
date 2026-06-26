@@ -16,6 +16,7 @@ from .backends import (
     build_backend,
 )
 from .config import FuguLocalConfig, ModelConfig, RoleConfig
+from .coordinator import Coordinator, Plan
 
 logger = logging.getLogger("fugu_local.orchestrator")
 
@@ -46,6 +47,9 @@ class OrchestrationResult:
     synthesis_error: Optional[str] = None
     run_id: str = ""
     latency_ms: Optional[float] = None
+    pattern: str = "role_split"
+    plan_reason: Optional[str] = None
+    plan_source: Optional[str] = None
 
 
 class FuguLocalOrchestrator:
@@ -61,6 +65,24 @@ class FuguLocalOrchestrator:
         self._models = config.model_by_name()
         self._backend_overrides = backend_overrides or {}
         self._backends: Dict[str, LLMBackend] = {}
+        self._coordinator = self._build_coordinator()
+
+    def _build_coordinator(self) -> Optional[Coordinator]:
+        coordinator_config = self.config.coordinator
+        if not coordinator_config.enabled:
+            return None
+        meta_backend = None
+        if coordinator_config.meta_model:
+            meta_backend = self._backend_for_model(coordinator_config.meta_model)
+        return Coordinator(
+            coordinator_config,
+            meta_backend=meta_backend,
+            meta_model_name=(
+                self._models[coordinator_config.meta_model].model
+                if coordinator_config.meta_model
+                else None
+            ),
+        )
 
     @property
     def roles(self) -> List[RoleConfig]:
@@ -80,6 +102,58 @@ class FuguLocalOrchestrator:
         started = time.perf_counter()
 
         user_text = _latest_user_message_text(messages)
+        plan = self._coordinator.plan(user_text) if self._coordinator else None
+        pattern = plan.pattern if plan else "role_split"
+
+        if pattern == "direct":
+            outcome = self._run_direct(
+                messages, user_text, temperature=temperature, max_tokens=max_tokens
+            )
+        elif pattern == "parallel_ensemble":
+            outcome = self._run_parallel_ensemble(
+                messages,
+                user_text,
+                plan,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        else:
+            outcome = self._run_role_split(
+                messages, user_text, temperature=temperature, max_tokens=max_tokens
+            )
+
+        selected_roles, worker_results, content, synthesizer_role, synthesis_error = outcome
+
+        if not any(result.ok for result in worker_results):
+            errors = "; ".join(
+                f"{result.role}: {result.error}" for result in worker_results if result.error
+            )
+            logger.warning("run %s: all worker roles failed: %s", run_id, errors)
+            raise OrchestrationError(f"All worker roles failed: {errors}")
+
+        result = OrchestrationResult(
+            content=content,
+            selected_roles=selected_roles,
+            worker_results=worker_results,
+            synthesizer_role=synthesizer_role,
+            synthesis_error=synthesis_error,
+            run_id=run_id,
+            latency_ms=round((time.perf_counter() - started) * 1000, 1),
+            pattern=pattern,
+            plan_reason=plan.reason if plan else None,
+            plan_source=plan.source if plan else None,
+        )
+        self._log_run(result)
+        return result
+
+    def _run_role_split(
+        self,
+        messages: List[ChatMessage],
+        user_text: str,
+        *,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> tuple:
         synthesizer = self._select_synthesizer()
         worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
         selected_roles = self._select_worker_roles(worker_roles, user_text)
@@ -92,16 +166,10 @@ class FuguLocalOrchestrator:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        if not any(result.ok for result in worker_results):
-            errors = "; ".join(
-                f"{result.role}: {result.error}" for result in worker_results if result.error
-            )
-            logger.warning("run %s: all worker roles failed: %s", run_id, errors)
-            raise OrchestrationError(f"All worker roles failed: {errors}")
 
         synthesizer_role: Optional[str] = None
         synthesis_error: Optional[str] = None
-        if synthesizer:
+        if synthesizer and any(result.ok for result in worker_results):
             synthesizer_role = synthesizer.name
             try:
                 content = self._synthesize(
@@ -117,17 +185,92 @@ class FuguLocalOrchestrator:
         else:
             content = _deterministic_merge(worker_results)
 
-        result = OrchestrationResult(
-            content=content,
-            selected_roles=[role.name for role in selected_roles],
-            worker_results=worker_results,
-            synthesizer_role=synthesizer_role,
-            synthesis_error=synthesis_error,
-            run_id=run_id,
-            latency_ms=round((time.perf_counter() - started) * 1000, 1),
+        return (
+            [role.name for role in selected_roles],
+            worker_results,
+            content,
+            synthesizer_role,
+            synthesis_error,
         )
-        self._log_run(result)
-        return result
+
+    def _run_direct(
+        self,
+        messages: List[ChatMessage],
+        user_text: str,
+        *,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> tuple:
+        worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
+        selected = self._select_worker_roles(worker_roles, user_text)
+        if not selected:
+            raise OrchestrationError("No worker roles are configured")
+        role = selected[0]
+        worker_results = self._run_workers(
+            [role], messages, temperature=temperature, max_tokens=max_tokens
+        )
+        content = worker_results[0].content if worker_results[0].ok else ""
+        return ([role.name], worker_results, content, None, None)
+
+    def _run_parallel_ensemble(
+        self,
+        messages: List[ChatMessage],
+        user_text: str,
+        plan: Optional[Plan],
+        *,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> tuple:
+        worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
+        selected = self._select_worker_roles(worker_roles, user_text)
+        if not selected:
+            raise OrchestrationError("No worker roles are configured")
+        base_role = selected[0]
+        n = plan.ensemble_n if plan else self.config.coordinator.ensemble.n
+        vote = plan.ensemble_vote if plan else self.config.coordinator.ensemble.vote
+
+        members = [
+            RoleConfig(
+                name=f"{base_role.name}#{index + 1}",
+                model=base_role.model,
+                system_prompt=base_role.system_prompt,
+            )
+            for index in range(max(1, n))
+        ]
+        worker_results = self._run_workers(
+            members, messages, temperature=temperature, max_tokens=max_tokens
+        )
+
+        synthesizer = self._select_synthesizer()
+        synthesizer_role: Optional[str] = None
+        synthesis_error: Optional[str] = None
+        ok_results = [result for result in worker_results if result.ok]
+
+        if vote == "synth" and synthesizer and ok_results:
+            synthesizer_role = synthesizer.name
+            try:
+                content = self._synthesize(
+                    synthesizer,
+                    original_messages=messages,
+                    worker_results=worker_results,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:  # noqa: BLE001 - synthesis is optional fallback path.
+                content = _majority_vote(ok_results) or _deterministic_merge(worker_results)
+                synthesis_error = str(exc)
+        elif ok_results:
+            content = _majority_vote(ok_results)
+        else:
+            content = _deterministic_merge(worker_results)
+
+        return (
+            [member.name for member in members],
+            worker_results,
+            content,
+            synthesizer_role,
+            synthesis_error,
+        )
 
     def _log_run(self, result: OrchestrationResult) -> None:
         """Emit a concise, non-sensitive structured log of one run. Prompt and
@@ -146,6 +289,9 @@ class FuguLocalOrchestrator:
         record = {
             "run_id": result.run_id,
             "latency_ms": result.latency_ms,
+            "pattern": result.pattern,
+            "plan_reason": result.plan_reason,
+            "plan_source": result.plan_source,
             "selected_roles": result.selected_roles,
             "synthesizer_role": result.synthesizer_role,
             "synthesis_error": result.synthesis_error,
@@ -310,6 +456,13 @@ class FuguLocalOrchestrator:
     def _model_for_role(self, role: RoleConfig) -> ModelConfig:
         return self._models[role.model]
 
+    def _backend_for_model(self, model_name: str) -> LLMBackend:
+        if model_name in self._backend_overrides:
+            return self._backend_overrides[model_name]
+        if model_name not in self._backends:
+            self._backends[model_name] = build_backend(self._models[model_name])
+        return self._backends[model_name]
+
     def _temperature(self, value: Optional[float]) -> float:
         return self.config.orchestrator.temperature if value is None else float(value)
 
@@ -330,6 +483,20 @@ def messages_from_dicts(raw_messages: Iterable[dict]) -> List[ChatMessage]:
             )
         messages.append(ChatMessage(role=role, content=content))
     return messages
+
+
+def _majority_vote(results: List[WorkerResult]) -> str:
+    counts: Dict[str, int] = {}
+    for result in results:
+        counts[result.content] = counts.get(result.content, 0) + 1
+    best = None
+    best_count = -1
+    for result in results:
+        count = counts[result.content]
+        if count > best_count:
+            best = result.content
+            best_count = count
+    return best or ""
 
 
 def _latest_user_message_text(messages: Iterable[ChatMessage]) -> str:

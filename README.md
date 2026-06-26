@@ -174,6 +174,28 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 
 ---
 
+## 適応コーディネーター（Fugu-style）
+
+`coordinator.enabled=true` を設定すると、固定ロール実行の前段に軽量な triage 層が入り、最新 user message を見て処理形態を選びます。既存設定では `enabled=false` が既定なので後方互換です。
+
+対応済みの最小縦切り:
+
+- `direct`: 1 worker へ単発で投げる
+- `role_split`: 既存の worker 並列 + synthesizer 統合
+- `parallel_ensemble`: 同一 role を N 並列で走らせ、`synth` または `majority` で統合
+- ルール/ヒューリスティック/meta-call(JSON抽出)の順で plan を決定
+- `OrchestrationResult.pattern` / `plan_reason` / `plan_source` と構造化ログで plan を確認可能
+
+例:
+
+```bash
+PYTHONPATH=src python3 -m fugu_local run \
+  --config examples/fugu-local.coordinator.json \
+  "複数案を比較して"
+```
+
+設計の全体像は [Fugu-style coordinator spec](docs/design/fugu-style-coordinator-spec.md) を参照してください。現時点では Phase 1 の最小実装で、model pool / health / failover / verifier retry loop / recursive coordination は後続フェーズです。
+
 ## ログ / オブザーバビリティ
 
 - 各オーケストレーション実行に `run_id` が付与され、`fugu_local.orchestrator` ロガーが INFO で 1 行の構造化サマリ（run_id・総レイテンシ・選抜ロール・synthesizer・各ロールの model / ok / latency_ms / エラー要約）を出力します。
