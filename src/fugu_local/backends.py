@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Protocol
@@ -148,22 +149,41 @@ def _post_json(
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    safe_url = _safe_url(url)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise BackendError(f"HTTP {exc.code} from {url}: {body}") from exc
+        # Read and discard the body so the connection can be cleaned up, but never
+        # surface backend response bodies because they may contain prompts, model
+        # output, request metadata, or credentials echoed by a local server.
+        try:
+            exc.read()
+        except Exception:  # noqa: BLE001 - best-effort cleanup only.
+            pass
+        raise BackendError(
+            f"HTTP {exc.code} from {safe_url} (backend response body redacted)"
+        ) from exc
     except urllib.error.URLError as exc:
-        raise BackendError(f"Could not reach {url}: {exc.reason}") from exc
+        raise BackendError(f"Could not reach {safe_url}: {exc.reason}") from exc
     except TimeoutError as exc:
-        raise BackendError(f"Timed out calling {url}") from exc
+        raise BackendError(f"Timed out calling {safe_url}") from exc
 
     try:
         decoded = json.loads(body)
     except json.JSONDecodeError as exc:
-        raise BackendError(f"Non-JSON response from {url}: {body[:200]}") from exc
+        raise BackendError(f"Non-JSON response from {safe_url} (body redacted)") from exc
     if not isinstance(decoded, Mapping):
-        raise BackendError(f"JSON response from {url} must be an object")
+        raise BackendError(f"JSON response from {safe_url} must be an object")
     return decoded
+
+
+def _safe_url(url: str) -> str:
+    """Return scheme, host, port, and path while dropping query/fragment data."""
+
+    parsed = urllib.parse.urlsplit(url)
+    path = parsed.path or "/"
+    if parsed.scheme and parsed.netloc:
+        return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+    return path
 

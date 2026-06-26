@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import threading
 import time
@@ -90,8 +91,8 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         except OrchestrationError as exc:
             self._write_json(502, {"error": {"message": str(exc)}})
             return
-        except Exception as exc:  # noqa: BLE001 - HTTP boundary.
-            self._write_json(500, {"error": {"message": str(exc)}})
+        except Exception:  # noqa: BLE001 - HTTP boundary; do not leak internals.
+            self._write_json(500, {"error": {"message": "internal server error"}})
             return
         finally:
             self.server.release_request_slot()
@@ -106,6 +107,10 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
     def _read_json_body(self) -> Dict[str, Any]:
         content_length = self._content_length()
         if content_length > MAX_REQUEST_BODY_BYTES:
+            # Drain a bounded amount of the request body before responding so clients
+            # sending a just-over-limit body can receive the JSON 413 response instead
+            # of seeing a connection reset while still preserving the memory cap.
+            self.rfile.read(MAX_REQUEST_BODY_BYTES + 1)
             raise RequestTooLargeError(
                 f"request body too large: limit is {MAX_REQUEST_BODY_BYTES} bytes"
             )
@@ -141,6 +146,50 @@ def _validate_chat_completion_request(body: Dict[str, Any]) -> None:
         raise ValueError("streaming responses are not supported")
     if "tools" in body or "tool_choice" in body:
         raise ValueError("tool calling is not supported")
+    _validate_messages_schema(body)
+
+
+def _validate_messages_schema(body: Dict[str, Any]) -> None:
+    """Validate the Chat Completions message array shape, raising ValueError (HTTP 400)."""
+
+    if "messages" not in body:
+        raise ValueError("'messages' is required")
+    raw_messages = body["messages"]
+    if not isinstance(raw_messages, list):
+        raise ValueError("'messages' must be a list")
+    if not raw_messages:
+        raise ValueError("'messages' must contain at least one message")
+    for index, message in enumerate(raw_messages):
+        if not isinstance(message, dict):
+            raise ValueError(f"message at index {index} must be an object")
+        if not isinstance(message.get("role"), str):
+            raise ValueError(f"message at index {index} must contain a string 'role'")
+        if not isinstance(message.get("content"), str):
+            raise ValueError(f"message at index {index} must contain a string 'content'")
+
+
+def is_safe_bind_host(host: str) -> bool:
+    """Return True when host is limited to the local loopback interface."""
+
+    normalized = host.strip().lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        # DNS names and LAN hostnames can resolve externally or privately; require opt-in.
+        return False
+
+
+def validate_bind_host(host: str, *, allow_unsafe_bind: bool = False) -> None:
+    if allow_unsafe_bind or is_safe_bind_host(host):
+        return
+    raise ValueError(
+        "refusing to bind the unauthenticated development server to a non-loopback "
+        f"address ({host!r}). The built-in server has no TLS or authentication by "
+        "default; use --allow-unsafe-bind only for deliberate private-network or "
+        "reverse-proxy deployments with appropriate controls."
+    )
 
 
 def _optional_temperature(value: Any) -> Optional[float]:
@@ -170,7 +219,9 @@ def serve(
     port: int = 8080,
     *,
     max_concurrent_requests: int = DEFAULT_MAX_CONCURRENT_REQUESTS,
+    allow_unsafe_bind: bool = False,
 ) -> None:
+    validate_bind_host(host, allow_unsafe_bind=allow_unsafe_bind)
     orchestrator = FuguLocalOrchestrator(config)
     httpd = FuguLocalHTTPServer(
         (host, port),

@@ -26,7 +26,16 @@ This keeps the API reachable only from the local machine.
 
 ## LAN / private network use
 
-If binding to a LAN address or `0.0.0.0`, treat the server as unauthenticated by default. Only expose it on a trusted network segment, VPN, or Tailscale-like private overlay.
+If binding to a LAN address, `0.0.0.0`, `::`, or a non-loopback hostname, treat the server as unauthenticated by default. These bind targets require an explicit CLI opt-in:
+
+```bash
+PYTHONPATH=src python3 -m fugu_local serve \
+  --config examples/fugu-local.ollama.json \
+  --host 0.0.0.0 \
+  --allow-unsafe-bind
+```
+
+Only use this for deliberate private-network deployments or behind a reverse proxy with appropriate controls.
 
 Recommended controls:
 
@@ -71,3 +80,7 @@ Potential future work:
 - Optional CORS policy controls
 - Explicit unsafe-bind warning for non-localhost hosts
 - Structured but redacted request logs
+
+## Error redaction
+
+Backend HTTP response bodies are redacted from raised backend errors and HTTP responses because local LLM servers can echo prompts, completions, request metadata, or credentials in error bodies. Error messages keep concise diagnostics such as status code and backend host/path, but drop query strings, fragments, and raw response bodies.

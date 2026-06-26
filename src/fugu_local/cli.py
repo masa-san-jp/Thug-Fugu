@@ -9,7 +9,7 @@ from typing import Optional
 from .backends import ChatMessage
 from .config import ConfigError, load_config
 from .orchestrator import FuguLocalOrchestrator, OrchestrationError
-from .server import DEFAULT_MAX_CONCURRENT_REQUESTS, serve
+from .server import DEFAULT_MAX_CONCURRENT_REQUESTS, serve, validate_bind_host
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -35,6 +35,14 @@ def main(argv: Optional[list] = None) -> int:
         default=DEFAULT_MAX_CONCURRENT_REQUESTS,
         help="Maximum concurrent chat completion requests before returning HTTP 429",
     )
+    serve_parser.add_argument(
+        "--allow-unsafe-bind",
+        action="store_true",
+        help=(
+            "Allow binding to non-loopback addresses. Use only for deliberate "
+            "private-network or reverse-proxy deployments with TLS/auth controls."
+        ),
+    )
 
     validate_parser = subparsers.add_parser("validate-config", help="Validate config and exit")
     validate_parser.add_argument("--config", required=True, help="Path to JSON config")
@@ -58,12 +66,18 @@ def main(argv: Optional[list] = None) -> int:
         if args.max_concurrent_requests <= 0:
             print("--max-concurrent-requests must be positive", file=sys.stderr)
             return 2
-        serve(
-            config,
-            host=args.host,
-            port=args.port,
-            max_concurrent_requests=args.max_concurrent_requests,
-        )
+        try:
+            validate_bind_host(args.host, allow_unsafe_bind=args.allow_unsafe_bind)
+            serve(
+                config,
+                host=args.host,
+                port=args.port,
+                max_concurrent_requests=args.max_concurrent_requests,
+                allow_unsafe_bind=args.allow_unsafe_bind,
+            )
+        except ValueError as exc:
+            print(f"Unsafe bind refused: {exc}", file=sys.stderr)
+            return 2
         return 0
 
     if args.command == "run":
