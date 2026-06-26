@@ -1,13 +1,73 @@
-# Multiple-GPU role/model assignment
+# Multiple-GPU and single-GPU role/model assignment
 
-This guide covers the current, static way to get true parallel execution on a
-single multi-GPU host: run one local LLM server per GPU on a different port, then
-point each Thug-Fugu role at the corresponding `models[].base_url`.
+This guide covers how Thug-Fugu roles map to local model servers. The default
+target is single-GPU machines (GX10, Apple Silicon MacBook Pro); a future
+multiple-physical-GPU / CUDA path is kept at the end for Linux + multi-NVIDIA hosts.
 
-This is the GPU-local version of the same horizontal pattern described in
-`docs/design/distributed-inference.md`. It requires no scheduler changes because
-Thug-Fugu already runs worker roles concurrently and each model entry has an
-independent endpoint URL.
+It requires no scheduler changes because Thug-Fugu already runs worker roles
+concurrently and each model entry has an independent endpoint URL. See also
+`docs/design/distributed-inference.md` for the multi-machine version.
+
+## Target hardware assumption
+
+The primary target is **single-GPU machines** such as GX10 (DGX Spark class, 128GB
+unified memory) and Apple Silicon MacBook Pro. The multiple-physical-GPU / CUDA
+pinning section later in this document is kept for future Linux + multi-NVIDIA
+hosts, but it is out of scope for the default GX10 / MBP setup.
+
+## Single-GPU parallel roles (GX10 / MBP)
+
+On a single-GPU host there is no second device to pin processes to, so "true
+multi-GPU parallelism" via `CUDA_VISIBLE_DEVICES` does not apply. You still have two
+useful, supported options on one GPU:
+
+### Option A: one server with parallel batching
+
+Run a single Ollama server and let it process concurrent requests. On GX10 with a
+small-active MoE model this can yield real concurrency; on MBP it mainly improves
+throughput/quality rather than giving linear speedup.
+
+```bash
+OLLAMA_HOST=127.0.0.1:11434 OLLAMA_NUM_PARALLEL=4 ollama serve
+```
+
+Point all roles at the one endpoint (see `examples/fugu-local.single-gpu.json`).
+
+### Option B: several servers in parallel terminals (shared GPU)
+
+You can also launch several model servers on different ports in separate terminals.
+They all share the one GPU, so this is for wiring multiple distinct small models or
+isolating processes, not for multiplying GPU throughput.
+
+### Derive the servers from one config
+
+Instead of maintaining ports and model names twice, derive the server set from the
+same config you orchestrate with:
+
+```bash
+PYTHONPATH=src python3 scripts/serve_local_models.py \
+  --config examples/fugu-local.single-gpu.json \
+  --num-parallel 4
+```
+
+This prints the `ollama serve` and `ollama pull` commands for each endpoint in the
+config. Use `--json` to get a machine-readable plan. The helper only prints by
+default; it does not start anything.
+
+### Measure single-GPU concurrency
+
+Use the benchmark to find the point where adding parallel roles stops helping on
+one GPU (the throughput is finite even when concurrency works):
+
+```bash
+PYTHONPATH=src python3 scripts/benchmark_parallel_roles.py \
+  --config examples/fugu-local.single-gpu.json \
+  --prompt "設計案を作り、別視点でレビューして" \
+  --runs 3 \
+  --csv /tmp/thug-fugu-single-gpu.csv
+```
+
+---
 
 ## When this helps
 
@@ -25,7 +85,7 @@ Thug-Fugu coordinator
   └─ synth    -> http://127.0.0.1:11434 -> usually after workers finish
 ```
 
-## Start one Ollama instance per GPU
+## (Future / Linux+NVIDIA) Start one Ollama instance per physical GPU
 
 Run these in separate terminals on a Linux/NVIDIA host. Do not stop an existing
 system service blindly; if Ollama is already managed by your OS, either disable it
