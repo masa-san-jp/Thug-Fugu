@@ -10,6 +10,7 @@ from .config import (
 )
 from .coordinator import Coordinator, Plan
 from .orchestrator import FuguLocalOrchestrator, OrchestrationError, OrchestrationResult
+from .serverplan import ServerEndpoint, derive_server_plan, render_ollama_commands
 
 __all__ = [
     "ConfigError",
@@ -22,7 +23,10 @@ __all__ = [
     "OrchestratorConfig",
     "Plan",
     "RoleConfig",
+    "ServerEndpoint",
+    "derive_server_plan",
     "load_config",
+    "render_ollama_commands",
 ]
 
 __version__ = "0.1.0"

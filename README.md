@@ -179,7 +179,8 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 
 - worker は並列に投げられますが、**1 GPU の Ollama がバックエンドだと実際は直列**に処理されます（GPU が 1 つなら同時実行の旨味は出ない）。`max_parallel_workers` は「同時に投げる上限」であって、GPU が増えない限り総時間は概ね各ロールの直列和になります。
 - 参考実測：`gpt-oss:120b` を 3 ロール＋`gpt-oss:20b` を 1 ロール、単一 GPU で約 **2 分 38 秒 / 1 回**。
-- 速くしたい場合：ロール数を絞る、軽いモデルを混ぜる、`max_tokens` を抑える、`temperature` を下げる。複数GPUへ role/model を静的割当する場合は [Multiple-GPU role/model assignment](docs/operations/multi-gpu-role-assignment.md)、複数ノードへ水平分散する場合は [distributed-inference.md](docs/design/distributed-inference.md) を参照。
+- 速くしたい場合：ロール数を絞る、軽いモデルを混ぜる、`max_tokens` を抑える、`temperature` を下げる。単一GPU(GX10/MBP)での並列ロールや複数GPUの静的割当は [role/model assignment](docs/operations/multi-gpu-role-assignment.md)、複数ノードへ水平分散する場合は [distributed-inference.md](docs/design/distributed-inference.md) を参照。
+- 1 つの config から必要なローカルサーバ群（ポート/モデル）を導出して起動コマンドを出すには `scripts/serve_local_models.py --config <config>` を使う（既定は表示のみ）。
 
 ---
 
