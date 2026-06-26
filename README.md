@@ -240,7 +240,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ## セキュリティ注意
 
 - デフォルトの HTTP bind は `127.0.0.1` を推奨します。
-- 外部公開する場合は、リバースプロキシ側で認証と TLS を設定してください。Ollama 自体は認証を持たないため、LAN / Tailscale 内に限定してください。
+- `0.0.0.0`、`::`、LAN IP、ホスト名など非 loopback に bind する場合は、明示的に `--allow-unsafe-bind` が必要です。
+- 外部公開する場合は、リバースプロキシ側で認証、TLS、リクエストサイズ制限、レート制限を設定してください。Ollama 自体は認証を持たないため、LAN / Tailscale 内に限定してください。
+- Backend HTTP error body は、prompt / completion / credential の漏えいを避けるため user-visible error から redaction されます。
 - `api_key` は設定に直接書かず、`${ENV_VAR}` 展開で環境変数から渡せます。
 - 脆弱性を見つけた場合は、公開 issue に exploit details を書かず [SECURITY.md](SECURITY.md) に従って報告してください。
 - 詳細は [運用セキュリティ](docs/operations/security-profile.md) を参照してください。
