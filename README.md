@@ -179,7 +179,7 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 
 - worker は並列に投げられますが、**1 GPU の Ollama がバックエンドだと実際は直列**に処理されます（GPU が 1 つなら同時実行の旨味は出ない）。`max_parallel_workers` は「同時に投げる上限」であって、GPU が増えない限り総時間は概ね各ロールの直列和になります。
 - 参考実測：`gpt-oss:120b` を 3 ロール＋`gpt-oss:20b` を 1 ロール、単一 GPU で約 **2 分 38 秒 / 1 回**。
-- 速くしたい場合：ロール数を絞る、軽いモデルを混ぜる、`max_tokens` を抑える、`temperature` を下げる。複数ノードへ水平分散する場合は [distributed-inference.md](docs/design/distributed-inference.md) を参照。
+- 速くしたい場合：ロール数を絞る、軽いモデルを混ぜる、`max_tokens` を抑える、`temperature` を下げる。複数GPUへ role/model を静的割当する場合は [Multiple-GPU role/model assignment](docs/operations/multi-gpu-role-assignment.md)、複数ノードへ水平分散する場合は [distributed-inference.md](docs/design/distributed-inference.md) を参照。
 
 ---
 
@@ -247,7 +247,7 @@ logging.getLogger("fugu_local.orchestrator").setLevel(logging.INFO)  # 既定の
 - **新しい backend**：`src/fugu_local/backends.py` にバックエンドを追加し、`config.SUPPORTED_BACKENDS` に登録。
 - **新しい selection_policy**：`orchestrator._select_worker_roles` に分岐を追加し、`config.SUPPORTED_SELECTION_POLICIES` に登録。
 - **ロール追加**：config の `roles[]` に足すだけ（コード変更不要）。
-- **複数マシン分散**：[docs/design/distributed-inference.md](docs/design/distributed-inference.md)（`models[].base_url` を各ノードへ向ける静的分散は追加実装なしで可能）。
+- **複数GPU/複数マシン分散**：単一ホストの複数GPUは [docs/operations/multi-gpu-role-assignment.md](docs/operations/multi-gpu-role-assignment.md)、複数ノードは [docs/design/distributed-inference.md](docs/design/distributed-inference.md) を参照（`models[].base_url` を各 endpoint へ向ける静的分散は追加実装なしで可能）。
 
 ---
 
