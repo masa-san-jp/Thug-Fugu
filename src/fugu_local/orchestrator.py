@@ -32,6 +32,7 @@ class WorkerResult:
     content: str = ""
     error: Optional[str] = None
     latency_ms: Optional[float] = None
+    timed_out: bool = False
 
     @property
     def ok(self) -> bool:
@@ -101,13 +102,20 @@ class FuguLocalOrchestrator:
         run_id = uuid.uuid4().hex[:12]
         started = time.perf_counter()
 
+        request_timeout = self.config.orchestrator.request_timeout_seconds
+        deadline = started + request_timeout if request_timeout is not None else None
+
         user_text = _latest_user_message_text(messages)
         plan = self._coordinator.plan(user_text) if self._coordinator else None
         pattern = plan.pattern if plan else "role_split"
 
         if pattern == "direct":
             outcome = self._run_direct(
-                messages, user_text, temperature=temperature, max_tokens=max_tokens
+                messages,
+                user_text,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                deadline=deadline,
             )
         elif pattern == "parallel_ensemble":
             outcome = self._run_parallel_ensemble(
@@ -116,10 +124,15 @@ class FuguLocalOrchestrator:
                 plan,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                deadline=deadline,
             )
         else:
             outcome = self._run_role_split(
-                messages, user_text, temperature=temperature, max_tokens=max_tokens
+                messages,
+                user_text,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                deadline=deadline,
             )
 
         selected_roles, worker_results, content, synthesizer_role, synthesis_error = outcome
@@ -153,6 +166,7 @@ class FuguLocalOrchestrator:
         *,
         temperature: Optional[float],
         max_tokens: Optional[int],
+        deadline: Optional[float] = None,
     ) -> tuple:
         synthesizer = self._select_synthesizer()
         worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
@@ -165,11 +179,16 @@ class FuguLocalOrchestrator:
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            deadline=deadline,
         )
 
         synthesizer_role: Optional[str] = None
         synthesis_error: Optional[str] = None
-        if synthesizer and any(result.ok for result in worker_results):
+        if (
+            synthesizer
+            and any(result.ok for result in worker_results)
+            and not _deadline_passed(deadline)
+        ):
             synthesizer_role = synthesizer.name
             try:
                 content = self._synthesize(
@@ -200,6 +219,7 @@ class FuguLocalOrchestrator:
         *,
         temperature: Optional[float],
         max_tokens: Optional[int],
+        deadline: Optional[float] = None,
     ) -> tuple:
         worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
         selected = self._select_worker_roles(worker_roles, user_text)
@@ -207,7 +227,7 @@ class FuguLocalOrchestrator:
             raise OrchestrationError("No worker roles are configured")
         role = selected[0]
         worker_results = self._run_workers(
-            [role], messages, temperature=temperature, max_tokens=max_tokens
+            [role], messages, temperature=temperature, max_tokens=max_tokens, deadline=deadline
         )
         content = worker_results[0].content if worker_results[0].ok else ""
         return ([role.name], worker_results, content, None, None)
@@ -220,6 +240,7 @@ class FuguLocalOrchestrator:
         *,
         temperature: Optional[float],
         max_tokens: Optional[int],
+        deadline: Optional[float] = None,
     ) -> tuple:
         worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
         selected = self._select_worker_roles(worker_roles, user_text)
@@ -238,7 +259,7 @@ class FuguLocalOrchestrator:
             for index in range(max(1, n))
         ]
         worker_results = self._run_workers(
-            members, messages, temperature=temperature, max_tokens=max_tokens
+            members, messages, temperature=temperature, max_tokens=max_tokens, deadline=deadline
         )
 
         synthesizer = self._select_synthesizer()
@@ -246,7 +267,7 @@ class FuguLocalOrchestrator:
         synthesis_error: Optional[str] = None
         ok_results = [result for result in worker_results if result.ok]
 
-        if vote == "synth" and synthesizer and ok_results:
+        if vote == "synth" and synthesizer and ok_results and not _deadline_passed(deadline):
             synthesizer_role = synthesizer.name
             try:
                 content = self._synthesize(
@@ -282,6 +303,7 @@ class FuguLocalOrchestrator:
                 "model": w.model,
                 "ok": w.ok,
                 "latency_ms": w.latency_ms,
+                "timed_out": w.timed_out,
                 "error": w.error,
             }
             for w in result.worker_results
@@ -330,10 +352,12 @@ class FuguLocalOrchestrator:
         *,
         temperature: Optional[float],
         max_tokens: Optional[int],
+        deadline: Optional[float] = None,
     ) -> List[WorkerResult]:
         max_workers = min(len(roles), self.config.orchestrator.max_parallel_workers)
         results_by_role: Dict[str, WorkerResult] = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        try:
             futures = {
                 executor.submit(
                     self._run_role,
@@ -344,16 +368,36 @@ class FuguLocalOrchestrator:
                 ): role
                 for role in roles
             }
-            for future in concurrent.futures.as_completed(futures):
-                role = futures[future]
-                try:
-                    results_by_role[role.name] = future.result()
-                except Exception as exc:  # noqa: BLE001 - keep role isolation.
-                    results_by_role[role.name] = WorkerResult(
-                        role=role.name,
-                        model=role.model,
-                        error=str(exc),
-                    )
+            remaining = None if deadline is None else max(0.0, deadline - time.perf_counter())
+            try:
+                for future in concurrent.futures.as_completed(futures, timeout=remaining):
+                    role = futures[future]
+                    try:
+                        results_by_role[role.name] = future.result()
+                    except Exception as exc:  # noqa: BLE001 - keep role isolation.
+                        results_by_role[role.name] = WorkerResult(
+                            role=role.name,
+                            model=role.model,
+                            error=str(exc),
+                        )
+            except concurrent.futures.TimeoutError:
+                # Deadline reached; stop waiting for the remaining workers below.
+                pass
+
+            for future, role in futures.items():
+                if role.name in results_by_role:
+                    continue
+                future.cancel()
+                results_by_role[role.name] = WorkerResult(
+                    role=role.name,
+                    model=role.model,
+                    error="request deadline exceeded before completion",
+                    timed_out=True,
+                )
+        finally:
+            # Do not block on still-running backend calls; they will hit their own
+            # per-model timeout. Returning promptly is the point of a request deadline.
+            executor.shutdown(wait=False, cancel_futures=True)
         return [results_by_role[role.name] for role in roles]
 
     def _run_role(
@@ -483,6 +527,10 @@ def messages_from_dicts(raw_messages: Iterable[dict]) -> List[ChatMessage]:
             )
         messages.append(ChatMessage(role=role, content=content))
     return messages
+
+
+def _deadline_passed(deadline: Optional[float]) -> bool:
+    return deadline is not None and time.perf_counter() >= deadline
 
 
 def _majority_vote(results: List[WorkerResult]) -> str:

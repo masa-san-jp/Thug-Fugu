@@ -385,3 +385,94 @@ class CoordinatorObservabilityTests(unittest.TestCase):
         log_text = "\n".join(cm.output)
         self.assertNotIn(secret, log_text)
         self.assertNotIn("because user said", log_text)
+
+
+class SleepBackend:
+    def __init__(self, content, delay_seconds):
+        self.content = content
+        self.delay_seconds = delay_seconds
+        self.calls = []
+
+    def chat(self, request):
+        import time
+
+        self.calls.append(request)
+        time.sleep(self.delay_seconds)
+        return ChatResponse(content=self.content)
+
+
+def make_deadline_config(request_timeout_seconds=None):
+    orchestrator = {"selection_policy": "all", "max_parallel_workers": 2}
+    if request_timeout_seconds is not None:
+        orchestrator["request_timeout_seconds"] = request_timeout_seconds
+    return config_from_dict(
+        {
+            "models": [
+                {"name": "fast-model", "backend": "echo", "model": "mock-fast"},
+                {"name": "slow-model", "backend": "echo", "model": "mock-slow"},
+                {"name": "synth-model", "backend": "echo", "model": "mock-synth"},
+            ],
+            "roles": [
+                {"name": "fast", "model": "fast-model"},
+                {"name": "slow", "model": "slow-model"},
+                {
+                    "name": "synthesizer",
+                    "model": "synth-model",
+                    "is_synthesizer": True,
+                },
+            ],
+            "orchestrator": orchestrator,
+        }
+    )
+
+
+class RequestDeadlineTests(unittest.TestCase):
+    def test_default_no_deadline_waits_for_all_workers(self):
+        orchestrator = FuguLocalOrchestrator(
+            make_deadline_config(),
+            backend_overrides={
+                "fast-model": StaticBackend("fast output"),
+                "slow-model": SleepBackend("slow output", 0.03),
+                "synth-model": StaticBackend("final output"),
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertEqual(result.content, "final output")
+        self.assertTrue(all(not worker.timed_out for worker in result.worker_results))
+        self.assertIn("slow output", [worker.content for worker in result.worker_results])
+
+    def test_deadline_returns_partial_result_when_one_worker_succeeds(self):
+        orchestrator = FuguLocalOrchestrator(
+            make_deadline_config(request_timeout_seconds=0.02),
+            backend_overrides={
+                "fast-model": StaticBackend("fast output"),
+                "slow-model": SleepBackend("slow output", 0.08),
+                "synth-model": StaticBackend("final output"),
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertIn("fast output", result.content)
+        self.assertIsNone(result.synthesizer_role)
+        self.assertEqual(len(result.worker_results), 2)
+        timed_out = [worker for worker in result.worker_results if worker.timed_out]
+        self.assertEqual([worker.role for worker in timed_out], ["slow"])
+        self.assertIn("deadline", timed_out[0].error)
+
+    def test_deadline_raises_when_all_workers_timeout(self):
+        orchestrator = FuguLocalOrchestrator(
+            make_deadline_config(request_timeout_seconds=0.01),
+            backend_overrides={
+                "fast-model": SleepBackend("fast output", 0.08),
+                "slow-model": SleepBackend("slow output", 0.08),
+                "synth-model": StaticBackend("final output"),
+            },
+        )
+
+        with self.assertRaises(OrchestrationError) as ctx:
+            orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertIn("deadline", str(ctx.exception))

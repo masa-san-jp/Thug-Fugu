@@ -164,3 +164,36 @@ class CoordinatorConfigTests(unittest.TestCase):
                     "coordinator": {"enabled": True, "meta_model": "missing"},
                 }
             )
+
+
+class RequestTimeoutConfigTests(unittest.TestCase):
+    def test_request_timeout_defaults_to_none(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+
+        self.assertIsNone(config.orchestrator.request_timeout_seconds)
+
+    def test_accepts_positive_request_timeout(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+                "orchestrator": {"request_timeout_seconds": 5},
+            }
+        )
+
+        self.assertEqual(config.orchestrator.request_timeout_seconds, 5.0)
+
+    def test_rejects_non_positive_request_timeout(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [{"name": "planner", "model": "m"}],
+                    "orchestrator": {"request_timeout_seconds": 0},
+                }
+            )
