@@ -1,0 +1,51 @@
+{
+  "models": [
+    {
+      "name": "gpu0-planner",
+      "backend": "ollama",
+      "model": "gpt-oss:20b",
+      "base_url": "http://127.0.0.1:11434",
+      "timeout_seconds": 300
+    },
+    {
+      "name": "gpu1-reviewer",
+      "backend": "ollama",
+      "model": "gpt-oss:20b",
+      "base_url": "http://127.0.0.1:11435",
+      "timeout_seconds": 300
+    },
+    {
+      "name": "gpu0-synth",
+      "backend": "ollama",
+      "model": "gpt-oss:20b",
+      "base_url": "http://127.0.0.1:11434",
+      "timeout_seconds": 300
+    }
+  ],
+  "roles": [
+    {
+      "name": "planner",
+      "model": "gpu0-planner",
+      "system_prompt": "あなたは計画担当。タスクを分解し、実行方針とリスクを簡潔に示す。",
+      "always_include": true
+    },
+    {
+      "name": "reviewer",
+      "model": "gpu1-reviewer",
+      "system_prompt": "あなたは検証担当。別視点で正しさ、抜け、運用リスクを簡潔に点検する。",
+      "always_include": true
+    },
+    {
+      "name": "synthesizer",
+      "model": "gpu0-synth",
+      "system_prompt": "あなたは統合担当。planner と reviewer の出力を1つの回答にまとめる。",
+      "is_synthesizer": true
+    }
+  ],
+  "orchestrator": {
+    "selection_policy": "all",
+    "max_parallel_workers": 2,
+    "temperature": 0.2,
+    "request_timeout_seconds": 180
+  }
+}
