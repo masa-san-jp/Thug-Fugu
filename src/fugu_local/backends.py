@@ -40,8 +40,7 @@ class ChatResponse:
 
 
 class LLMBackend(Protocol):
-    def chat(self, request: ChatRequest) -> ChatResponse:
-        ...
+    def chat(self, request: ChatRequest) -> ChatResponse: ...
 
 
 def build_backend(config: ModelConfig) -> LLMBackend:
@@ -186,4 +185,3 @@ def _safe_url(url: str) -> str:
     if parsed.scheme and parsed.netloc:
         return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
     return path
-

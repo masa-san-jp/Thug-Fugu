@@ -58,9 +58,7 @@ class ConfigTests(unittest.TestCase):
             config_from_dict(
                 {
                     "models": [{"name": "m", "backend": "echo", "model": "mock"}],
-                    "roles": [
-                        {"name": "planner", "model": "m", "always_include": "false"}
-                    ],
+                    "roles": [{"name": "planner", "model": "m", "always_include": "false"}],
                 }
             )
 

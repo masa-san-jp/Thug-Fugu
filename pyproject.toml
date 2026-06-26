@@ -14,8 +14,29 @@ authors = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.5",
+  "coverage[toml]>=7",
+]
+
 [project.scripts]
 fugu-local = "fugu_local.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.coverage.run]
+branch = true
+source = ["fugu_local"]
+
+[tool.coverage.report]
+show_missing = true

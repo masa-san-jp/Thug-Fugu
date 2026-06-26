@@ -11,9 +11,9 @@ from fugu_local.backends import ChatResponse
 from fugu_local.config import config_from_dict
 from fugu_local.orchestrator import FuguLocalOrchestrator
 from fugu_local.server import (
-    FuguLocalHTTPServer,
-    FuguLocalHandler,
     MAX_REQUEST_BODY_BYTES,
+    FuguLocalHandler,
+    FuguLocalHTTPServer,
     is_safe_bind_host,
     validate_bind_host,
 )
@@ -123,17 +123,13 @@ class ServerTests(unittest.TestCase):
         self.assertIn("message at index 0 must be an object", body["error"]["message"])
 
     def test_invalid_message_role_returns_400(self):
-        status, body = self._post_chat(
-            {"messages": [{"role": 123, "content": "hello"}]}
-        )
+        status, body = self._post_chat({"messages": [{"role": 123, "content": "hello"}]})
 
         self.assertEqual(status, 400)
         self.assertIn("string 'role'", body["error"]["message"])
 
     def test_invalid_message_content_returns_400(self):
-        status, body = self._post_chat(
-            {"messages": [{"role": "user", "content": ["hello"]}]}
-        )
+        status, body = self._post_chat({"messages": [{"role": "user", "content": ["hello"]}]})
 
         self.assertEqual(status, 400)
         self.assertIn("string 'content'", body["error"]["message"])
@@ -161,9 +157,9 @@ class ServerTests(unittest.TestCase):
             hdrs=None,
             fp=io.BytesIO(secret.encode("utf-8")),
         )
-        payload = json.dumps(
-            {"messages": [{"role": "user", "content": "valid request"}]}
-        ).encode("utf-8")
+        payload = json.dumps({"messages": [{"role": "user", "content": "valid request"}]}).encode(
+            "utf-8"
+        )
 
         with mock.patch("urllib.request.urlopen", side_effect=backend_error):
             conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)

@@ -200,9 +200,7 @@ class ObservabilityTest(unittest.TestCase):
             },
         )
         with self.assertLogs("fugu_local.orchestrator", level="INFO") as cm:
-            result = orchestrator.chat(
-                [ChatMessage(role="user", content="TOP_SECRET_PROMPT")]
-            )
+            result = orchestrator.chat([ChatMessage(role="user", content="TOP_SECRET_PROMPT")])
         self.assertTrue(result.run_id)
         self.assertIsNotNone(result.latency_ms)
         self.assertTrue(all(w.latency_ms is not None for w in result.worker_results))
