@@ -97,7 +97,10 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
             self.server.release_request_slot()
 
         model = body.get("model") or "fugu-local"
-        self._write_json(200, _chat_completion_response(model=model, content=result.content))
+        if body.get("stream") is True:
+            self._write_chat_completion_stream(model=model, content=result.content)
+        else:
+            self._write_json(200, _chat_completion_response(model=model, content=result.content))
 
     def log_message(self, format: str, *args: Any) -> None:
         # Keep the default server quiet when embedded in development tooling.
@@ -139,10 +142,19 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _write_chat_completion_stream(self, *, model: str, content: str) -> None:
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("cache-control", "no-cache")
+        self.end_headers()
+        for event in _chat_completion_stream_events(model=model, content=content):
+            self.wfile.write(event)
+        self.wfile.flush()
+
 
 def _validate_chat_completion_request(body: Dict[str, Any]) -> None:
-    if body.get("stream") not in (None, False):
-        raise ValueError("streaming responses are not supported")
+    if "stream" in body and not isinstance(body.get("stream"), bool):
+        raise ValueError("stream must be a boolean when provided")
     if "tools" in body or "tool_choice" in body:
         raise ValueError("tool calling is not supported")
     _validate_messages_schema(body)
@@ -233,6 +245,67 @@ def serve(
         f"(max_concurrent_requests={max_concurrent_requests})"
     )
     httpd.serve_forever()
+
+
+def _chat_completion_stream_events(model: str, content: str) -> list:
+    created = int(time.time())
+    completion_id = f"chatcmpl-local-{created}"
+    chunks = [
+        _chat_completion_chunk(
+            completion_id=completion_id,
+            created=created,
+            model=model,
+            delta={"role": "assistant"},
+            finish_reason=None,
+        )
+    ]
+    if content:
+        chunks.append(
+            _chat_completion_chunk(
+                completion_id=completion_id,
+                created=created,
+                model=model,
+                delta={"content": content},
+                finish_reason=None,
+            )
+        )
+    chunks.append(
+        _chat_completion_chunk(
+            completion_id=completion_id,
+            created=created,
+            model=model,
+            delta={},
+            finish_reason="stop",
+        )
+    )
+    events = [
+        f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8") for chunk in chunks
+    ]
+    events.append(b"data: [DONE]\n\n")
+    return events
+
+
+def _chat_completion_chunk(
+    *,
+    completion_id: str,
+    created: int,
+    model: str,
+    delta: Dict[str, str],
+    finish_reason: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": delta,
+                "finish_reason": finish_reason,
+            }
+        ],
+    }
 
 
 def _chat_completion_response(model: str, content: str) -> Dict[str, Any]:

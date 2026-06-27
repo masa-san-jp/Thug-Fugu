@@ -74,8 +74,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["choices"][0]["message"]["role"], "assistant")
         self.assertIn("echo:m/mock", body["choices"][0]["message"]["content"])
 
-    def test_rejects_streaming_requests(self):
-        status, body = self._post_chat(
+    def test_streaming_chat_completions_returns_sse(self):
+        status, headers, raw = self._post_chat_raw(
             {
                 "model": "fugu-local",
                 "messages": [{"role": "user", "content": "hello"}],
@@ -83,8 +83,23 @@ class ServerTests(unittest.TestCase):
             }
         )
 
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", headers["content-type"])
+        events = _parse_sse_events(raw.decode("utf-8"))
+        self.assertEqual(events[-1], "[DONE]")
+        chunks = [json.loads(event) for event in events[:-1]]
+        self.assertEqual(chunks[0]["object"], "chat.completion.chunk")
+        self.assertEqual(chunks[0]["choices"][0]["delta"], {"role": "assistant"})
+        self.assertIn("echo:m/mock", chunks[1]["choices"][0]["delta"]["content"])
+        self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "stop")
+
+    def test_rejects_non_boolean_stream(self):
+        status, body = self._post_chat(
+            {"messages": [{"role": "user", "content": "hello"}], "stream": "true"}
+        )
+
         self.assertEqual(status, 400)
-        self.assertIn("streaming", body["error"]["message"])
+        self.assertIn("stream", body["error"]["message"])
 
     def test_rejects_tool_calling_requests(self):
         status, body = self._post_chat(
@@ -181,6 +196,54 @@ class ServerTests(unittest.TestCase):
         self.assertIn("redacted", message)
         self.assertNotIn(secret, message)
 
+    def test_streaming_backend_failure_returns_json_error_before_sse_headers(self):
+        secret = "SECRET_SENTINEL_STREAMING_BACKEND_BODY"
+        config = config_from_dict(
+            {
+                "models": [
+                    {
+                        "name": "m",
+                        "backend": "openai-compatible",
+                        "model": "mock",
+                        "base_url": "http://localhost:1234",
+                    }
+                ],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+        self.server.orchestrator = FuguLocalOrchestrator(config)
+        backend_error = urllib.error.HTTPError(
+            url="http://localhost:1234/v1/chat/completions",
+            code=500,
+            msg="Internal Server Error",
+            hdrs=None,
+            fp=io.BytesIO(secret.encode("utf-8")),
+        )
+        payload = json.dumps(
+            {
+                "stream": True,
+                "messages": [{"role": "user", "content": "valid streaming request"}],
+            }
+        ).encode("utf-8")
+
+        with mock.patch("urllib.request.urlopen", side_effect=backend_error):
+            conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+            try:
+                conn.request(
+                    "POST",
+                    "/v1/chat/completions",
+                    body=payload,
+                    headers={"content-type": "application/json"},
+                )
+                response = conn.getresponse()
+                body = json.loads(response.read().decode("utf-8"))
+            finally:
+                conn.close()
+
+        self.assertEqual(response.status, 502)
+        self.assertIn("application/json", response.getheader("content-type"))
+        self.assertNotIn(secret, body["error"]["message"])
+
     def test_rejects_invalid_temperature(self):
         status, body = self._post_chat(
             {
@@ -276,6 +339,17 @@ class ServerTests(unittest.TestCase):
         )
         return self._open_json(request)
 
+    def _post_chat_raw(self, payload):
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/v1/chat/completions",
+            data=data,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, dict(response.headers), response.read()
+
     def _open_json(self, request):
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
@@ -306,6 +380,15 @@ class BindSafetyTests(unittest.TestCase):
 
     def test_allow_unsafe_bind_opt_in(self):
         validate_bind_host("0.0.0.0", allow_unsafe_bind=True)
+
+
+def _parse_sse_events(raw):
+    events = []
+    for block in raw.strip().split("\n\n"):
+        lines = [line for line in block.splitlines() if line.startswith("data: ")]
+        if lines:
+            events.append("\n".join(line[len("data: ") :] for line in lines))
+    return events
 
 
 if __name__ == "__main__":

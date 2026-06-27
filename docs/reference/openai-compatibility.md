@@ -2,7 +2,7 @@
 
 ## Status
 
-Thug-Fugu implements a minimal non-streaming subset of the OpenAI Chat Completions API for local tooling compatibility.
+Thug-Fugu implements a minimal subset of the OpenAI Chat Completions API for local tooling compatibility, including buffered SSE for `stream: true`.
 
 Endpoint:
 
@@ -18,7 +18,7 @@ POST /v1/chat/completions
 | `messages` | Supported | Must be a list of objects with string `role` and string `content`. |
 | `temperature` | Supported | Optional. Passed through to backend requests. |
 | `max_tokens` | Supported | Optional. Passed as `max_tokens` for OpenAI-compatible backends and `num_predict` for Ollama. |
-| `stream` | Unsupported | Non-streaming only. Requests with `stream: true` should fail explicitly. |
+| `stream` | Partial | `false`/omitted returns JSON. `true` returns OpenAI-style SSE, but currently streams the already-completed final answer as buffered chunks rather than backend token deltas. |
 | `tools` | Unsupported | Tool calling is not implemented. |
 | `tool_choice` | Unsupported | Tool calling is not implemented. |
 
@@ -68,7 +68,7 @@ Typical status codes:
 
 The current minimal API does not attempt full OpenAI compatibility. In particular:
 
-- No streaming SSE responses
+- `stream: true` is buffered SSE: worker fan-out and synthesizer still run to completion before the server emits SSE chunks.
 - No tool calling
 - No function calling
 - No multimodal message content
