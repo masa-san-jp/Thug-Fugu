@@ -184,6 +184,41 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 
 ---
 
+## モデルプール / フェイルオーバー / ロードバランス
+
+`model_pools[]` を使うと、1つの論理モデル名を複数エンドポイント（別ポート/別ノード）に束ね、role から参照できます。既存 `models[]` のみの設定はそのまま動きます（後方互換）。
+
+```json
+{
+  "model_pools": [
+    {
+      "name": "fast-pool",
+      "backend": "ollama",
+      "model": "gpt-oss:20b",
+      "endpoints": ["http://127.0.0.1:11434", "http://127.0.0.1:11435"],
+      "policy": "least_busy"
+    }
+  ],
+  "roles": [
+    {"name": "thinker", "model": "fast-pool", "always_include": true}
+  ]
+}
+```
+
+- `policy`: `round_robin`（呼び出しごとに先頭メンバーをローテーション）または `least_busy`（同時実行中の最も少ないメンバーを優先）。
+- **フェイルオーバー**: あるメンバーが失敗したら同プールの次メンバーへ再試行。全メンバー失敗で初めてそのロールが失敗扱いになる。
+- role は `models[].name` でも `model_pools[].name` でも参照可能（名前空間は一意）。
+- サンプル: `examples/fugu-local.model-pool.json`。
+- 現状は最小縦切りで、定期 health check は未実装（失敗時フェイルオーバーで代替）。動的発見やキューは今後。
+
+例:
+
+```bash
+PYTHONPATH=src python3 -m fugu_local run \
+  --config examples/fugu-local.model-pool.json \
+  "設計案を作り、別視点でレビューして"
+```
+
 ## 適応コーディネーター（Fugu-style）
 
 `coordinator.enabled=true` を設定すると、固定ロール実行の前段に軽量な triage 層が入り、最新 user message を見て処理形態を選びます。既存設定では `enabled=false` が既定なので後方互換です。

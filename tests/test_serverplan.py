@@ -98,6 +98,38 @@ class ServerPlanTests(unittest.TestCase):
 
         self.assertEqual([e.base_url for e in plan], ["http://127.0.0.1:11434"])
 
+    def test_model_pool_endpoints_are_included_in_plan(self):
+        config = config_from_dict(
+            {
+                "models": [
+                    {
+                        "name": "synth",
+                        "backend": "ollama",
+                        "model": "gpt-oss:20b",
+                        "base_url": "http://127.0.0.1:11434",
+                    }
+                ],
+                "model_pools": [
+                    {
+                        "name": "fast-pool",
+                        "backend": "ollama",
+                        "model": "gpt-oss:20b",
+                        "endpoints": [
+                            "http://127.0.0.1:11434",
+                            "http://127.0.0.1:11435",
+                        ],
+                    }
+                ],
+                "roles": [{"name": "worker", "model": "fast-pool"}],
+            }
+        )
+
+        plan = derive_server_plan(config)
+
+        self.assertEqual([endpoint.port for endpoint in plan], [11434, 11435])
+        self.assertEqual(plan[0].models, ["gpt-oss:20b"])
+        self.assertEqual(plan[1].models, ["gpt-oss:20b"])
+
     def test_render_ollama_commands_with_num_parallel(self):
         config = _config(
             [

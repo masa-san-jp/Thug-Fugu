@@ -15,8 +15,9 @@ from .backends import (
     LLMBackend,
     build_backend,
 )
-from .config import FuguLocalConfig, ModelConfig, RoleConfig
+from .config import FuguLocalConfig, ModelConfig, ModelPoolConfig, RoleConfig
 from .coordinator import Coordinator, Plan
+from .routing import ModelRouter, RouterMember
 
 logger = logging.getLogger("fugu_local.orchestrator")
 
@@ -64,25 +65,63 @@ class FuguLocalOrchestrator:
     ):
         self.config = config
         self._models = config.model_by_name()
+        self._pools = config.pool_by_name()
         self._backend_overrides = backend_overrides or {}
-        self._backends: Dict[str, LLMBackend] = {}
+        self._routers: Dict[str, ModelRouter] = self._build_routers()
         self._coordinator = self._build_coordinator()
+
+    def _build_routers(self) -> Dict[str, ModelRouter]:
+        routers: Dict[str, ModelRouter] = {}
+        for model in self.config.models:
+            routers[model.name] = ModelRouter(
+                model.model,
+                [self._member_for_model(model)],
+                policy="round_robin",
+            )
+        for pool in self.config.model_pools:
+            members = [
+                self._member_for_pool_endpoint(pool, base_url) for base_url in pool.endpoints
+            ]
+            routers[pool.name] = ModelRouter(pool.model, members, policy=pool.policy)
+        return routers
+
+    def _member_for_model(self, model: ModelConfig) -> RouterMember:
+        if model.name in self._backend_overrides:
+            backend = self._backend_overrides[model.name]
+        else:
+            backend = build_backend(model)
+        return RouterMember(key=model.name, backend=backend)
+
+    def _member_for_pool_endpoint(self, pool: ModelPoolConfig, base_url: str) -> RouterMember:
+        if base_url in self._backend_overrides:
+            backend = self._backend_overrides[base_url]
+        else:
+            backend = build_backend(
+                ModelConfig(
+                    name=f"{pool.name}@{base_url}",
+                    backend=pool.backend,
+                    model=pool.model,
+                    base_url=base_url,
+                    api_key=pool.api_key,
+                    timeout_seconds=pool.timeout_seconds,
+                )
+            )
+        return RouterMember(key=base_url, backend=backend)
 
     def _build_coordinator(self) -> Optional[Coordinator]:
         coordinator_config = self.config.coordinator
         if not coordinator_config.enabled:
             return None
         meta_backend = None
+        meta_model_name = None
         if coordinator_config.meta_model:
-            meta_backend = self._backend_for_model(coordinator_config.meta_model)
+            router = self._routers[coordinator_config.meta_model]
+            meta_backend = router
+            meta_model_name = router.model_string
         return Coordinator(
             coordinator_config,
             meta_backend=meta_backend,
-            meta_model_name=(
-                self._models[coordinator_config.meta_model].model
-                if coordinator_config.meta_model
-                else None
-            ),
+            meta_model_name=meta_model_name,
         )
 
     @property
@@ -416,7 +455,7 @@ class FuguLocalOrchestrator:
         )
         started = time.perf_counter()
         try:
-            response = self._backend_for_role(role).chat(request)
+            response = self._router_for_role(role).chat(request)
         except Exception as exc:  # noqa: BLE001 - keep role isolation; record timing.
             return WorkerResult(
                 role=role.name,
@@ -461,14 +500,14 @@ class FuguLocalOrchestrator:
                 ),
             ),
         ]
-        model = self._model_for_role(role)
+        router = self._router_for_role(role)
         request = ChatRequest(
-            model=model.model,
+            model=router.model_string,
             messages=synthesis_messages,
             temperature=self._temperature(temperature),
             max_tokens=self._max_tokens(max_tokens),
         )
-        response = self._backend_for_role(role).chat(request)
+        response = router.chat(request)
         return response.content
 
     def _build_role_request(
@@ -479,33 +518,19 @@ class FuguLocalOrchestrator:
         temperature: Optional[float],
         max_tokens: Optional[int],
     ) -> ChatRequest:
-        model = self._model_for_role(role)
+        router = self._router_for_role(role)
         role_messages = list(messages)
         if role.system_prompt:
             role_messages = [ChatMessage(role="system", content=role.system_prompt)] + role_messages
         return ChatRequest(
-            model=model.model,
+            model=router.model_string,
             messages=role_messages,
             temperature=self._temperature(temperature),
             max_tokens=self._max_tokens(max_tokens),
         )
 
-    def _backend_for_role(self, role: RoleConfig) -> LLMBackend:
-        if role.model in self._backend_overrides:
-            return self._backend_overrides[role.model]
-        if role.model not in self._backends:
-            self._backends[role.model] = build_backend(self._model_for_role(role))
-        return self._backends[role.model]
-
-    def _model_for_role(self, role: RoleConfig) -> ModelConfig:
-        return self._models[role.model]
-
-    def _backend_for_model(self, model_name: str) -> LLMBackend:
-        if model_name in self._backend_overrides:
-            return self._backend_overrides[model_name]
-        if model_name not in self._backends:
-            self._backends[model_name] = build_backend(self._models[model_name])
-        return self._backends[model_name]
+    def _router_for_role(self, role: RoleConfig) -> ModelRouter:
+        return self._routers[role.model]
 
     def _temperature(self, value: Optional[float]) -> float:
         return self.config.orchestrator.temperature if value is None else float(value)

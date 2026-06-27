@@ -42,23 +42,32 @@ def derive_server_plan(
 ) -> List[ServerEndpoint]:
     """Group config models by endpoint for the requested backends.
 
-    Order is stable and follows first appearance in ``config.models``. Models with
-    no ``base_url`` (for example the ``echo`` backend) are skipped.
+    Order is stable and follows first appearance in ``config.models`` followed by
+    first appearance in ``config.model_pools``. Models with no ``base_url`` (for
+    example the ``echo`` backend) are skipped.
     """
 
     grouped: dict = {}
     order: List[str] = []
+
+    def add_endpoint(base_url: str, backend: str, model_name: str) -> None:
+        if backend not in backends:
+            return
+        key = base_url.rstrip("/")
+        if key not in grouped:
+            grouped[key] = {"backend": backend, "models": []}
+            order.append(key)
+        if model_name not in grouped[key]["models"]:
+            grouped[key]["models"].append(model_name)
+
     for model in config.models:
-        if model.backend not in backends:
-            continue
         if not model.base_url:
             continue
-        key = model.base_url.rstrip("/")
-        if key not in grouped:
-            grouped[key] = {"backend": model.backend, "models": []}
-            order.append(key)
-        if model.model not in grouped[key]["models"]:
-            grouped[key]["models"].append(model.model)
+        add_endpoint(model.base_url, model.backend, model.model)
+
+    for pool in config.model_pools:
+        for endpoint in pool.endpoints:
+            add_endpoint(endpoint, pool.backend, pool.model)
 
     endpoints: List[ServerEndpoint] = []
     for base_url in order:
