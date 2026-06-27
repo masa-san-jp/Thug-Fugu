@@ -314,7 +314,7 @@ python3 -m coverage report --fail-under=80
 
 ## 制限事項
 
-- tool calling、GPU スケジューリングはこの最小実装の対象外です。
+- tool calling、GPU スケジューリングはこの最小実装の対象外です。tool calling の設計方針は [tool-calling-support.md](docs/design/tool-calling-support.md) を参照してください。
 - ロール選抜は静的（`all` / `keyword`）で、ラウンド間の動的な指示更新や反復ループは持ちません（必要なら呼び出し側で実装します）。
 - `/v1/chat/completions` は最小対応です。`stream: true` は buffered SSE（生成後に chunk 化）で対応します。対応範囲は [OpenAI 互換範囲](docs/reference/openai-compatibility.md) を参照してください。
 - `usage` は現時点では互換用プレースホルダーです。方針は [usage accounting 方針](docs/reference/usage-accounting.md) を参照してください。
