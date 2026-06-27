@@ -19,8 +19,8 @@ POST /v1/chat/completions
 | `temperature` | Supported | Optional. Passed through to backend requests. |
 | `max_tokens` | Supported | Optional. Passed as `max_tokens` for OpenAI-compatible backends and `num_predict` for Ollama. |
 | `stream` | Partial | `false`/omitted returns JSON. `true` returns OpenAI-style SSE, but currently streams the already-completed final answer as buffered chunks rather than backend token deltas. |
-| `tools` | Unsupported | Tool calling is not implemented. |
-| `tool_choice` | Unsupported | Tool calling is not implemented. |
+| `tools` | Unsupported | Tool calling is not implemented yet. Behavior is specified in `docs/design/tool-calling-support.md`; requests fail explicitly while disabled. |
+| `tool_choice` | Unsupported | Tool calling is not implemented yet. See `docs/design/tool-calling-support.md`. |
 
 ## Supported response fields
 
@@ -69,7 +69,7 @@ Typical status codes:
 The current minimal API does not attempt full OpenAI compatibility. In particular:
 
 - `stream: true` is buffered SSE: worker fan-out and synthesizer still run to completion before the server emits SSE chunks.
-- No tool calling
+- No tool calling yet; design is documented in `docs/design/tool-calling-support.md`
 - No function calling
 - No multimodal message content
 - No `/v1/models` endpoint
