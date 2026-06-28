@@ -183,6 +183,7 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 - 参考実測：`gpt-oss:120b` を 3 ロール＋`gpt-oss:20b` を 1 ロール、単一 GPU で約 **2 分 38 秒 / 1 回**。
 - 速くしたい場合：ロール数を絞る、軽いモデルを混ぜる、`max_tokens` を抑える、`temperature` を下げる。単一GPU(GX10/MBP)での並列ロールや複数GPUの静的割当は [role/model assignment](docs/operations/multi-gpu-role-assignment.md)、複数ノードへ水平分散する場合は [distributed-inference.md](docs/design/distributed-inference.md) を参照。
 - 1 つの config から必要なローカルサーバ群（ポート/モデル）を導出して起動コマンドを出すには `scripts/serve_local_models.py --config <config>` を使う（既定は表示のみ）。
+- MBP（Apple M4 Max）+ `qwen2.5:0.5b` の実測では `OLLAMA_NUM_PARALLEL=2` が最良平均（1.54x vs `=1`）でした。まず `=2` から試し、モデル/プロンプトごとに測ってください。
 
 ---
 

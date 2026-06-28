@@ -67,16 +67,58 @@ PYTHONPATH=src python3 scripts/benchmark_parallel_roles.py \
   --csv /tmp/thug-fugu-single-gpu.csv
 ```
 
+### MBP single-GPU baseline (2026-06-28)
+
+A small-model benchmark was run on an Apple Silicon MBP to establish a practical
+starting point for single-GPU parallel-role settings.
+
+Environment:
+
+- Machine: Apple M4 Max
+- Memory: 128 GiB unified memory
+- Ollama: 0.30.11
+- Runtime: Metal (`MTL0: Apple M4 Max` in Ollama logs)
+- Model: `qwen2.5:0.5b`
+- Workload: 2 worker roles (`thinker`, `reviewer`) + 1 synthesizer
+- Orchestrator: `max_parallel_workers=2`, `max_tokens=96`
+- Runs: 1 warmup + 5 measured runs per setting
+
+Results:
+
+| Setting | Runs | Mean wall ms | Median ms | Min ms | Max ms | Speedup vs p=1 |
+|---|---:|---:|---:|---:|---:|---:|
+| `OLLAMA_NUM_PARALLEL=1` | 5 | 2131.4 | 2066.1 | 2024.1 | 2295.2 | 1.00x |
+| `OLLAMA_NUM_PARALLEL=2` | 5 | 1381.1 | 1459.4 | 1203.2 | 1527.8 | 1.54x |
+| `OLLAMA_NUM_PARALLEL=4` | 5 | 1471.6 | 1557.8 | 1101.7 | 1651.8 | 1.45x |
+
+Interpretation:
+
+- On this MBP/model/workload, increasing `OLLAMA_NUM_PARALLEL` from 1 to 2 reduced
+  mean wall time by about 35%.
+- `OLLAMA_NUM_PARALLEL=4` remained faster than 1, but was slower than 2 on mean.
+- Recommended starting point for similar MBP single-GPU testing: **start at
+  `OLLAMA_NUM_PARALLEL=2`**, then benchmark before increasing further.
+- These numbers are a baseline, not a universal rule. Larger models, MoE models,
+  longer prompts, or different role counts can move the saturation point.
+
+The raw CSV was posted to issue #1:
+
+```text
+https://github.com/masa-san-jp/Thug-Fugu/issues/1#issuecomment-4824361000
+```
+
 ---
 
-## When this helps
+## Future: multiple physical GPUs / CUDA pinning
 
-If all roles point to one Ollama instance backed by one GPU, `ThreadPoolExecutor`
-submits workers concurrently but the GPU often serializes actual inference. With
-multiple Ollama instances pinned to different GPUs, independent roles can run on
-separate devices and reduce wall-clock latency.
+The following section is for Linux + multiple NVIDIA GPUs. It is **not** the default
+GX10/MBP single-GPU setup. If all roles point to one Ollama instance backed by one
+GPU, `ThreadPoolExecutor` submits workers concurrently but the GPU may still
+serialize or saturate actual inference. With multiple physical GPUs and one Ollama
+instance pinned per GPU, independent roles can run on separate devices and reduce
+wall-clock latency.
 
-## Topology
+## Multiple-physical-GPU topology
 
 ```text
 Thug-Fugu coordinator
