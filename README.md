@@ -1,5 +1,7 @@
 # Thug-Fugu Local LLM Orchestration
 
+<img width="1254" height="1254" alt="Thug-Fug-Logo" src="https://github.com/user-attachments/assets/01ed1c2c-ea87-4598-bdc1-a14329d31fed" />
+
 Thug AI の Fugu のように、複数ロールのローカル LLM を協調実行するための最小 Python 実装です。
 
 **Status:** Local-first experimental. Built-in HTTP server はローカル開発 / private network 用であり、公開インターネット向けの hardened API server ではありません。外部公開する場合は reverse proxy 側で TLS、認証、rate limit、request size limit を設定してください。
