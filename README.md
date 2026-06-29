@@ -1,6 +1,6 @@
 # Thug-Fugu Local LLM Orchestration
 
-<img width="1254" height="1254" alt="Thug-Fug-Logo" src="https://github.com/user-attachments/assets/01ed1c2c-ea87-4598-bdc1-a14329d31fed" />
+<img width="1254" height="1254" alt="Thug-Fug-Logo" src="docs/assets/Thug-Fug-Logo.png" />
 
 Thug AI の Fugu のように、複数ロールのローカル LLM を協調実行するための最小 Python 実装です。
 
