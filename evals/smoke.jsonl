@@ -1,0 +1,2 @@
+{"id":"capital-france","prompt":"What is the capital of France? Answer with only the city name.","grader":{"type":"contains","value":"Paris"}}
+{"id":"simple-addition","prompt":"What is 2 + 3? Answer with only the number.","grader":{"type":"regex","pattern":"\\b5\\b"}}

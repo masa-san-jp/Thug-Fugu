@@ -290,6 +290,24 @@ logging.getLogger("fugu_local.orchestrator").setLevel(logging.INFO)  # 既定の
 
 ---
 
+## 評価ハーネス
+
+`evals/*.jsonl` の問題セットに対して複数 config を A/B/C 比較できます。結果は per-case CSV と summary JSON に出ます。
+
+```bash
+PYTHONPATH=src python3 scripts/evaluate_orchestration.py \
+  --cases evals/smoke.jsonl \
+  --condition A=examples/fugu-local.single-gpu.json \
+  --condition B=examples/fugu-local.model-pool.json \
+  --condition C=examples/fugu-local.coordinator.json \
+  --csv /tmp/thug-fugu-eval.csv \
+  --summary /tmp/thug-fugu-eval-summary.json
+```
+
+詳細は [evaluation-harness.md](docs/operations/evaluation-harness.md) を参照してください。
+
+---
+
 ## テスト / 品質チェック
 
 ```bash
