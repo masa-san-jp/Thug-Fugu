@@ -267,3 +267,48 @@ class ModelPoolConfigTests(unittest.TestCase):
                     "roles": [{"name": "worker", "model": "dup"}],
                 }
             )
+
+
+class ToolCallingConfigTests(unittest.TestCase):
+    def _base(self, tool_calling):
+        return {
+            "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+            "roles": [{"name": "planner", "model": "m"}],
+            "tool_calling": tool_calling,
+        }
+
+    def test_defaults_disabled(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+        self.assertFalse(config.tool_calling.enabled)
+        self.assertEqual(config.tool_calling.mode, "disabled")
+
+    def test_enabled_synthesizer_only(self):
+        config = config_from_dict(
+            self._base({"enabled": True, "mode": "synthesizer_only", "allowed_tools": ["lookup"]})
+        )
+        self.assertTrue(config.tool_calling.enabled)
+        self.assertEqual(config.tool_calling.mode, "synthesizer_only")
+        self.assertEqual(config.tool_calling.allowed_tools, ["lookup"])
+
+    def test_rejects_mode_mismatch_when_disabled(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(self._base({"enabled": False, "mode": "synthesizer_only"}))
+
+    def test_rejects_disabled_mode_when_enabled(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(self._base({"enabled": True, "mode": "disabled"}))
+
+    def test_rejects_execute_true(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base({"enabled": True, "mode": "synthesizer_only", "execute": True})
+            )
+
+    def test_rejects_unknown_mode(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(self._base({"enabled": True, "mode": "all_workers"}))

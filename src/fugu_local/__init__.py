@@ -7,6 +7,7 @@ from .config import (
     ModelPoolConfig,
     OrchestratorConfig,
     RoleConfig,
+    ToolCallingConfig,
     load_config,
 )
 from .coordinator import Coordinator, Plan
@@ -28,6 +29,7 @@ __all__ = [
     "Plan",
     "RoleConfig",
     "RouterMember",
+    "ToolCallingConfig",
     "ServerEndpoint",
     "derive_server_plan",
     "load_config",

@@ -393,3 +393,96 @@ def _parse_sse_events(raw):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolCallingServerTests(unittest.TestCase):
+    def _server(self, tool_calling):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+                "tool_calling": tool_calling,
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0), FuguLocalHandler, FuguLocalOrchestrator(config)
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    def _post(self, base_url, payload):
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{base_url}/v1/chat/completions",
+            data=data,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def test_tools_rejected_when_disabled(self):
+        base = self._server({"enabled": False, "mode": "disabled"})
+        status, body = self._post(
+            base,
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {"name": "lookup"}}],
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("tool calling is not enabled", body["error"]["message"])
+
+    def test_valid_tools_accepted_when_enabled(self):
+        base = self._server({"enabled": True, "mode": "synthesizer_only"})
+        status, body = self._post(
+            base,
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup_note",
+                            "description": "look up a note",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+                "tool_choice": "auto",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["object"], "chat.completion")
+
+    def test_invalid_tool_name_returns_400(self):
+        base = self._server({"enabled": True, "mode": "synthesizer_only"})
+        status, body = self._post(
+            base,
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {"name": "bad name!"}}],
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("invalid function name", body["error"]["message"])
+
+    def test_tool_choice_required_not_supported(self):
+        base = self._server({"enabled": True, "mode": "synthesizer_only"})
+        status, body = self._post(
+            base,
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"type": "function", "function": {"name": "lookup"}}],
+                "tool_choice": "required",
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("not supported yet", body["error"]["message"])

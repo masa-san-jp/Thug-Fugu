@@ -13,6 +13,7 @@ SUPPORTED_BACKENDS = {"ollama", "openai-compatible", "echo"}
 SUPPORTED_SELECTION_POLICIES = {"all", "keyword"}
 SUPPORTED_PATTERNS = {"direct", "role_split", "parallel_ensemble"}
 SUPPORTED_ENSEMBLE_VOTES = {"synth", "majority"}
+SUPPORTED_TOOL_CALLING_MODES = {"disabled", "synthesizer_only"}
 SUPPORTED_POOL_POLICIES = {"round_robin", "least_busy"}
 HTTP_BACKENDS = {"ollama", "openai-compatible"}
 
@@ -85,11 +86,20 @@ class CoordinatorConfig:
 
 
 @dataclass(frozen=True)
+class ToolCallingConfig:
+    enabled: bool = False
+    mode: str = "disabled"
+    execute: bool = False
+    allowed_tools: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class FuguLocalConfig:
     models: List[ModelConfig]
     roles: List[RoleConfig]
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     coordinator: CoordinatorConfig = field(default_factory=CoordinatorConfig)
+    tool_calling: ToolCallingConfig = field(default_factory=ToolCallingConfig)
     model_pools: List[ModelPoolConfig] = field(default_factory=list)
 
     def model_by_name(self) -> Dict[str, ModelConfig]:
@@ -124,12 +134,14 @@ def config_from_dict(raw: Mapping[str, Any]) -> FuguLocalConfig:
     roles = [_role_from_dict(item) for item in _required_list(raw, "roles")]
     orchestrator = _orchestrator_from_dict(raw.get("orchestrator", {}))
     coordinator = _coordinator_from_dict(raw.get("coordinator", {}))
+    tool_calling = _tool_calling_from_dict(raw.get("tool_calling", {}))
     model_pools = [_model_pool_from_dict(item) for item in _optional_list(raw, "model_pools")]
     config = FuguLocalConfig(
         models=models,
         roles=roles,
         orchestrator=orchestrator,
         coordinator=coordinator,
+        tool_calling=tool_calling,
         model_pools=model_pools,
     )
     validate_config(config)
@@ -185,6 +197,7 @@ def validate_config(config: FuguLocalConfig) -> None:
         raise ConfigError("request_timeout_seconds must be positive when provided")
 
     _validate_coordinator(config, model_names)
+    _validate_tool_calling(config.tool_calling)
 
 
 def _model_from_dict(raw: Any) -> ModelConfig:
@@ -293,6 +306,40 @@ def _validate_coordinator(config: FuguLocalConfig, model_names: set) -> None:
             f"Unsupported coordinator.ensemble.vote '{coordinator.ensemble.vote}'. "
             f"Supported: {sorted(SUPPORTED_ENSEMBLE_VOTES)}"
         )
+
+
+def _tool_calling_from_dict(raw: Any) -> ToolCallingConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "tool_calling")
+    allowed_tools_raw = obj.get("allowed_tools", [])
+    if not isinstance(allowed_tools_raw, list) or not all(
+        isinstance(item, str) for item in allowed_tools_raw
+    ):
+        raise ConfigError("tool_calling.allowed_tools must be a list of strings")
+    return ToolCallingConfig(
+        enabled=_optional_bool(obj, "enabled", default=False),
+        mode=_optional_str(obj, "mode") or "disabled",
+        execute=_optional_bool(obj, "execute", default=False),
+        allowed_tools=list(allowed_tools_raw),
+    )
+
+
+def _validate_tool_calling(config: ToolCallingConfig) -> None:
+    if config.mode not in SUPPORTED_TOOL_CALLING_MODES:
+        raise ConfigError(
+            f"Unsupported tool_calling.mode '{config.mode}'. "
+            f"Supported: {sorted(SUPPORTED_TOOL_CALLING_MODES)}"
+        )
+    if not config.enabled and config.mode != "disabled":
+        raise ConfigError("tool_calling.mode must be 'disabled' when tool_calling.enabled=false")
+    if config.enabled and config.mode == "disabled":
+        raise ConfigError("tool_calling.mode must not be 'disabled' when tool_calling.enabled=true")
+    if config.execute:
+        raise ConfigError("tool_calling.execute=true is not implemented in shape-only mode")
+    for tool in config.allowed_tools:
+        if not tool:
+            raise ConfigError("tool_calling.allowed_tools must not contain empty names")
 
 
 def _model_pool_from_dict(raw: Any) -> ModelPoolConfig:
