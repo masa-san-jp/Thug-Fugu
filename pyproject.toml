@@ -19,9 +19,13 @@ dev = [
   "ruff>=0.5",
   "coverage[toml]>=7",
 ]
+mcp = [
+  "mcp>=1.2",
+]
 
 [project.scripts]
 fugu-local = "fugu_local.cli:main"
+fugu-local-mcp = "fugu_local.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -37,6 +41,7 @@ select = ["E", "F", "W", "I"]
 [tool.coverage.run]
 branch = true
 source = ["fugu_local"]
+omit = ["src/fugu_local/mcp_server.py"]
 
 [tool.coverage.report]
 show_missing = true
