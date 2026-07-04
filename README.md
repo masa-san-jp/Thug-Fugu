@@ -222,6 +222,26 @@ PYTHONPATH=src python3 -m fugu_local run \
   "設計案を作り、別視点でレビューして"
 ```
 
+## エージェント連携（Claude Code / MCP）
+
+Thug-Fugu を MCP ツール `consult_thug_fugu` として公開し、Claude Code などの外側エージェントから「相談役」として呼べます（README のパターン2）。外側エージェントが tool 実行と制御ループを保持し、多視点推論だけを Thug-Fugu に委譲します。
+
+```bash
+pip install -e '.[mcp]'
+claude mcp add thug-fugu -- fugu-local-mcp --config /abs/path/examples/fugu-local.consult.json
+```
+
+Python から直接使う場合:
+
+```python
+from fugu_local import load_config, consult
+print(consult(load_config("examples/fugu-local.consult.json"), "設計してレビューして")["answer"])
+```
+
+詳細は [docs/integrations/claude-code.md](docs/integrations/claude-code.md) を参照してください。
+
+---
+
 ## 適応コーディネーター（Fugu-style）
 
 `coordinator.enabled=true` を設定すると、固定ロール実行の前段に軽量な triage 層が入り、最新 user message を見て処理形態を選びます。既存設定では `enabled=false` が既定なので後方互換です。
