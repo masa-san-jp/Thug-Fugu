@@ -1,0 +1,16 @@
+{
+  "models": [
+    {"name": "echo-general", "backend": "echo", "model": "general-local-mock"}
+  ],
+  "roles": [
+    {"name": "worker", "model": "echo-general", "always_include": true},
+    {"name": "synthesizer", "model": "echo-general", "is_synthesizer": true}
+  ],
+  "tool_calling": {
+    "enabled": true,
+    "mode": "synthesizer_only",
+    "execute": false,
+    "allowed_tools": ["lookup_note"]
+  },
+  "orchestrator": {"selection_policy": "all", "temperature": 0.2}
+}

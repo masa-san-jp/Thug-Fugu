@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,7 +72,7 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
 
         try:
             body = self._read_json_body()
-            _validate_chat_completion_request(body)
+            _validate_chat_completion_request(body, self.server.orchestrator.config.tool_calling)
             messages = messages_from_dicts(body.get("messages", []))
             result = self.server.orchestrator.chat(
                 messages,
@@ -152,12 +153,64 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-def _validate_chat_completion_request(body: Dict[str, Any]) -> None:
+_TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _validate_chat_completion_request(body: Dict[str, Any], tool_calling=None) -> None:
     if "stream" in body and not isinstance(body.get("stream"), bool):
         raise ValueError("stream must be a boolean when provided")
     if "tools" in body or "tool_choice" in body:
-        raise ValueError("tool calling is not supported")
+        _validate_tool_calling_request(body, tool_calling)
     _validate_messages_schema(body)
+
+
+def _validate_tool_calling_request(body: Dict[str, Any], tool_calling) -> None:
+    if tool_calling is None or not getattr(tool_calling, "enabled", False):
+        raise ValueError("tool calling is not enabled")
+
+    if "tools" in body:
+        tools = body["tools"]
+        if not isinstance(tools, list) or not tools:
+            raise ValueError("'tools' must be a non-empty list when provided")
+        for index, tool in enumerate(tools):
+            if not isinstance(tool, dict):
+                raise ValueError(f"tool at index {index} must be an object")
+            if tool.get("type") != "function":
+                raise ValueError(f"tool at index {index} must have type 'function'")
+            function = tool.get("function")
+            if not isinstance(function, dict):
+                raise ValueError(f"tool at index {index} must have a 'function' object")
+            name = function.get("name")
+            if not isinstance(name, str) or not _TOOL_NAME_PATTERN.match(name):
+                raise ValueError(
+                    f"tool at index {index} has an invalid function name; "
+                    "must match ^[A-Za-z0-9_-]{1,64}$"
+                )
+            if "description" in function and not isinstance(function["description"], str):
+                raise ValueError(f"tool at index {index} description must be a string")
+            if "parameters" in function and not isinstance(function["parameters"], dict):
+                raise ValueError(f"tool at index {index} parameters must be an object")
+
+    tool_choice = body.get("tool_choice", "auto")
+    if isinstance(tool_choice, str):
+        if tool_choice not in ("none", "auto", "required"):
+            raise ValueError("tool_choice string must be one of: none, auto, required")
+        if tool_choice == "required":
+            raise ValueError(
+                "tool_choice='required' is not supported yet; this build accepts tool schemas "
+                "in shape-only mode but does not force or execute tool calls"
+            )
+    elif isinstance(tool_choice, dict):
+        if tool_choice.get("type") != "function" or not isinstance(
+            tool_choice.get("function"), dict
+        ):
+            raise ValueError("named tool_choice must be {'type':'function','function':{...}}")
+        raise ValueError(
+            "named tool_choice is not supported yet; this build accepts tool schemas in "
+            "shape-only mode but does not force or execute tool calls"
+        )
+    else:
+        raise ValueError("tool_choice must be a string or an object when provided")
 
 
 def _validate_messages_schema(body: Dict[str, Any]) -> None:
