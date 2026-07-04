@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
@@ -14,6 +15,7 @@ SUPPORTED_SELECTION_POLICIES = {"all", "keyword"}
 SUPPORTED_PATTERNS = {"direct", "role_split", "parallel_ensemble"}
 SUPPORTED_ENSEMBLE_VOTES = {"synth", "majority"}
 SUPPORTED_TOOL_CALLING_MODES = {"disabled", "synthesizer_only"}
+TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SUPPORTED_POOL_POLICIES = {"round_robin", "least_busy"}
 HTTP_BACKENDS = {"ollama", "openai-compatible"}
 
@@ -338,8 +340,11 @@ def _validate_tool_calling(config: ToolCallingConfig) -> None:
     if config.execute:
         raise ConfigError("tool_calling.execute=true is not implemented in shape-only mode")
     for tool in config.allowed_tools:
-        if not tool:
-            raise ConfigError("tool_calling.allowed_tools must not contain empty names")
+        if not TOOL_NAME_PATTERN.match(tool):
+            raise ConfigError(
+                "tool_calling.allowed_tools entries must match ^[A-Za-z0-9_-]{1,64}$; "
+                f"invalid entry: {tool!r}"
+            )
 
 
 def _model_pool_from_dict(raw: Any) -> ModelPoolConfig:

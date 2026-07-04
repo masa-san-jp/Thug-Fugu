@@ -312,3 +312,17 @@ class ToolCallingConfigTests(unittest.TestCase):
     def test_rejects_unknown_mode(self):
         with self.assertRaises(ConfigError):
             config_from_dict(self._base({"enabled": True, "mode": "all_workers"}))
+
+    def test_rejects_whitespace_only_allowed_tool(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base({"enabled": True, "mode": "synthesizer_only", "allowed_tools": ["  "]})
+            )
+
+    def test_rejects_invalid_allowed_tool_name(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base(
+                    {"enabled": True, "mode": "synthesizer_only", "allowed_tools": ["bad name!"]}
+                )
+            )

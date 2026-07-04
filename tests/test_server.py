@@ -391,10 +391,6 @@ def _parse_sse_events(raw):
     return events
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ToolCallingServerTests(unittest.TestCase):
     def _server(self, tool_calling):
         config = config_from_dict(
@@ -486,3 +482,7 @@ class ToolCallingServerTests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertIn("not supported yet", body["error"]["message"])
+
+
+if __name__ == "__main__":
+    unittest.main()
