@@ -69,3 +69,81 @@ class ConsultTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConsultToolExecutionTests(unittest.TestCase):
+    def _config(self, execute=True, allowed=None):
+        return config_from_dict(
+            {
+                "models": [
+                    {"name": "planner-model", "backend": "echo", "model": "mock-planner"},
+                    {"name": "synth-model", "backend": "echo", "model": "mock-synth"},
+                ],
+                "roles": [
+                    {"name": "planner", "model": "planner-model", "always_include": True},
+                    {"name": "synthesizer", "model": "synth-model", "is_synthesizer": True},
+                ],
+                "orchestrator": {"selection_policy": "all"},
+                "tool_calling": {
+                    "enabled": True,
+                    "mode": "synthesizer_only",
+                    "execute": execute,
+                    "allowed_tools": allowed if allowed is not None else ["echo"],
+                },
+            }
+        )
+
+    def _orchestrator(self, config):
+        return FuguLocalOrchestrator(
+            config,
+            backend_overrides={
+                "planner-model": StaticBackend("planner output"),
+                "synth-model": StaticBackend("final answer"),
+            },
+        )
+
+    def test_consult_executes_tool_calls(self):
+        config = self._config()
+        result = consult(
+            config,
+            "use the tool",
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": '{"text":"TOOL_OK"}'},
+                }
+            ],
+            orchestrator=self._orchestrator(config),
+        )
+        self.assertEqual(result["answer"], "final answer")
+        self.assertEqual(result["tool_results"][0]["content"], "TOOL_OK")
+        self.assertFalse(result["tool_results"][0]["error"])
+
+    def test_consult_denies_disallowed_tool(self):
+        config = self._config(allowed=["lookup_static"])
+        result = consult(
+            config,
+            "use the tool",
+            tool_calls=[
+                {"id": "c1", "type": "function", "function": {"name": "echo", "arguments": "{}"}}
+            ],
+            orchestrator=self._orchestrator(config),
+        )
+        self.assertIn("not allowed", result["tool_results"][0]["error"])
+
+    def test_consult_requires_execute_enabled(self):
+        config = self._config(execute=False)
+        with self.assertRaises(ValueError):
+            consult(
+                config,
+                "use the tool",
+                tool_calls=[
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{}"},
+                    }
+                ],
+                orchestrator=self._orchestrator(config),
+            )

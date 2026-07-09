@@ -93,6 +93,8 @@ class ToolCallingConfig:
     mode: str = "disabled"
     execute: bool = False
     allowed_tools: List[str] = field(default_factory=list)
+    timeout_seconds: float = 5.0
+    max_output_chars: int = 4000
 
 
 @dataclass(frozen=True)
@@ -324,6 +326,8 @@ def _tool_calling_from_dict(raw: Any) -> ToolCallingConfig:
         mode=_optional_str(obj, "mode") or "disabled",
         execute=_optional_bool(obj, "execute", default=False),
         allowed_tools=list(allowed_tools_raw),
+        timeout_seconds=_optional_number(obj, "timeout_seconds", default=5.0),
+        max_output_chars=_optional_int(obj, "max_output_chars", default=4000),
     )
 
 
@@ -337,8 +341,12 @@ def _validate_tool_calling(config: ToolCallingConfig) -> None:
         raise ConfigError("tool_calling.mode must be 'disabled' when tool_calling.enabled=false")
     if config.enabled and config.mode == "disabled":
         raise ConfigError("tool_calling.mode must not be 'disabled' when tool_calling.enabled=true")
-    if config.execute:
-        raise ConfigError("tool_calling.execute=true is not implemented in shape-only mode")
+    if config.execute and not config.allowed_tools:
+        raise ConfigError("tool_calling.allowed_tools must not be empty when execute=true")
+    if config.timeout_seconds <= 0:
+        raise ConfigError("tool_calling.timeout_seconds must be positive")
+    if config.max_output_chars <= 0:
+        raise ConfigError("tool_calling.max_output_chars must be positive")
     for tool in config.allowed_tools:
         if not TOOL_NAME_PATTERN.match(tool):
             raise ConfigError(

@@ -326,3 +326,56 @@ class ToolCallingConfigTests(unittest.TestCase):
                     {"enabled": True, "mode": "synthesizer_only", "allowed_tools": ["bad name!"]}
                 )
             )
+
+
+class ToolCallingExecutionConfigTests(unittest.TestCase):
+    def _base(self, tool_calling):
+        return {
+            "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+            "roles": [{"name": "planner", "model": "m"}],
+            "tool_calling": tool_calling,
+        }
+
+    def test_execute_requires_allowed_tools(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base(
+                    {
+                        "enabled": True,
+                        "mode": "synthesizer_only",
+                        "execute": True,
+                        "allowed_tools": [],
+                    }
+                )
+            )
+
+    def test_execute_accepted_with_allowed_tools(self):
+        config = config_from_dict(
+            self._base(
+                {
+                    "enabled": True,
+                    "mode": "synthesizer_only",
+                    "execute": True,
+                    "allowed_tools": ["echo"],
+                    "timeout_seconds": 3,
+                    "max_output_chars": 1000,
+                }
+            )
+        )
+        self.assertTrue(config.tool_calling.execute)
+        self.assertEqual(config.tool_calling.timeout_seconds, 3.0)
+        self.assertEqual(config.tool_calling.max_output_chars, 1000)
+
+    def test_rejects_non_positive_timeout(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base(
+                    {
+                        "enabled": True,
+                        "mode": "synthesizer_only",
+                        "execute": True,
+                        "allowed_tools": ["echo"],
+                        "timeout_seconds": 0,
+                    }
+                )
+            )
