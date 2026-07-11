@@ -5,14 +5,47 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "thug-fugu-local"
 version = "0.1.0"
-description = "Local LLM orchestration bridge inspired by Thug AI Fugu."
+description = "Multi-role local LLM orchestration for Ollama and OpenAI-compatible backends (planner/coder/reviewer/synthesizer, OpenAI-compatible HTTP API, MCP consult tool). / Ollama・OpenAI 互換バックエンド向けの複数ロール協調ローカル LLM オーケストレーション。"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
   { name = "Thug-Fugu contributors" }
 ]
+keywords = [
+  "llm",
+  "local-llm",
+  "llm-orchestration",
+  "multi-agent",
+  "ollama",
+  "openai-compatible",
+  "mcp",
+  "claude-code",
+  "ai-agents",
+  "self-hosted",
+  "inference",
+  "synthesizer",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/masa-san-jp/Thug-Fugu"
+Repository = "https://github.com/masa-san-jp/Thug-Fugu"
+Documentation = "https://github.com/masa-san-jp/Thug-Fugu/tree/main/docs"
+Issues = "https://github.com/masa-san-jp/Thug-Fugu/issues"
 
 [project.optional-dependencies]
 dev = [
