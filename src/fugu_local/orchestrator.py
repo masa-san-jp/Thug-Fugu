@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import logging
 import time
 import uuid
@@ -41,6 +42,17 @@ class WorkerResult:
 
 
 @dataclass(frozen=True)
+class VerificationAttempt:
+    attempt: int
+    role: str
+    model: str
+    ok: bool
+    critique: str = ""
+    error: Optional[str] = None
+    latency_ms: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class OrchestrationResult:
     content: str
     selected_roles: List[str]
@@ -52,6 +64,9 @@ class OrchestrationResult:
     pattern: str = "role_split"
     plan_reason: Optional[str] = None
     plan_source: Optional[str] = None
+    verification_attempts: List[VerificationAttempt] = field(default_factory=list)
+    verification_passed: Optional[bool] = None
+    verification_warning: Optional[str] = None
 
 
 class FuguLocalOrchestrator:
@@ -174,7 +189,16 @@ class FuguLocalOrchestrator:
                 deadline=deadline,
             )
 
-        selected_roles, worker_results, content, synthesizer_role, synthesis_error = outcome
+        (
+            selected_roles,
+            worker_results,
+            content,
+            synthesizer_role,
+            synthesis_error,
+            verification_attempts,
+            verification_passed,
+            verification_warning,
+        ) = outcome
 
         if not any(result.ok for result in worker_results):
             errors = "; ".join(
@@ -194,6 +218,9 @@ class FuguLocalOrchestrator:
             pattern=pattern,
             plan_reason=plan.reason if plan else None,
             plan_source=plan.source if plan else None,
+            verification_attempts=verification_attempts,
+            verification_passed=verification_passed,
+            verification_warning=verification_warning,
         )
         self._log_run(result)
         return result
@@ -208,18 +235,61 @@ class FuguLocalOrchestrator:
         deadline: Optional[float] = None,
     ) -> tuple:
         synthesizer = self._select_synthesizer()
-        worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
+        verifier = self._select_verifier()
+        worker_roles = self._worker_roles()
         selected_roles = self._select_worker_roles(worker_roles, user_text)
         if not selected_roles:
             raise OrchestrationError("No worker roles are configured")
 
-        worker_results = self._run_workers(
-            selected_roles,
-            messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            deadline=deadline,
-        )
+        worker_results: List[WorkerResult] = []
+        verification_attempts: List[VerificationAttempt] = []
+        verification_passed: Optional[bool] = None
+        verification_warning: Optional[str] = None
+        worker_messages = list(messages)
+        verify_config = self.config.coordinator.verify
+        max_attempts = 1 + (verify_config.max_retries if verify_config.enabled and verifier else 0)
+
+        for worker_attempt in range(max_attempts):
+            worker_results = self._run_workers(
+                selected_roles,
+                worker_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                deadline=deadline,
+            )
+
+            if (
+                not verify_config.enabled
+                or verifier is None
+                or not any(result.ok for result in worker_results)
+                or _deadline_passed(deadline)
+            ):
+                break
+
+            verification = self._run_verifier(
+                verifier,
+                attempt=len(verification_attempts) + 1,
+                original_messages=messages,
+                worker_results=worker_results,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            verification_attempts.append(verification)
+            verification_passed = verification.ok
+            if verification.ok:
+                break
+            if worker_attempt >= verify_config.max_retries or _deadline_passed(deadline):
+                verification_warning = (
+                    "verification did not pass within retry budget; "
+                    "returning the best available local result"
+                )
+                break
+            worker_messages = list(messages) + [
+                ChatMessage(
+                    role="user",
+                    content=_format_verifier_retry_instruction(verification.critique),
+                )
+            ]
 
         synthesizer_role: Optional[str] = None
         synthesis_error: Optional[str] = None
@@ -243,12 +313,18 @@ class FuguLocalOrchestrator:
         else:
             content = _deterministic_merge(worker_results)
 
+        if verification_warning:
+            content = f"Warning: {verification_warning}.\n\n{content}"
+
         return (
             [role.name for role in selected_roles],
             worker_results,
             content,
             synthesizer_role,
             synthesis_error,
+            verification_attempts,
+            verification_passed,
+            verification_warning,
         )
 
     def _run_direct(
@@ -260,7 +336,7 @@ class FuguLocalOrchestrator:
         max_tokens: Optional[int],
         deadline: Optional[float] = None,
     ) -> tuple:
-        worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
+        worker_roles = self._worker_roles()
         selected = self._select_worker_roles(worker_roles, user_text)
         if not selected:
             raise OrchestrationError("No worker roles are configured")
@@ -269,7 +345,7 @@ class FuguLocalOrchestrator:
             [role], messages, temperature=temperature, max_tokens=max_tokens, deadline=deadline
         )
         content = worker_results[0].content if worker_results[0].ok else ""
-        return ([role.name], worker_results, content, None, None)
+        return ([role.name], worker_results, content, None, None, [], None, None)
 
     def _run_parallel_ensemble(
         self,
@@ -281,7 +357,7 @@ class FuguLocalOrchestrator:
         max_tokens: Optional[int],
         deadline: Optional[float] = None,
     ) -> tuple:
-        worker_roles = [role for role in self.config.roles if not role.is_synthesizer]
+        worker_roles = self._worker_roles()
         selected = self._select_worker_roles(worker_roles, user_text)
         if not selected:
             raise OrchestrationError("No worker roles are configured")
@@ -294,6 +370,7 @@ class FuguLocalOrchestrator:
                 name=f"{base_role.name}#{index + 1}",
                 model=base_role.model,
                 system_prompt=base_role.system_prompt,
+                is_verifier=False,
             )
             for index in range(max(1, n))
         ]
@@ -330,6 +407,9 @@ class FuguLocalOrchestrator:
             content,
             synthesizer_role,
             synthesis_error,
+            [],
+            None,
+            None,
         )
 
     def _log_run(self, result: OrchestrationResult) -> None:
@@ -356,10 +436,38 @@ class FuguLocalOrchestrator:
             "selected_roles": result.selected_roles,
             "synthesizer_role": result.synthesizer_role,
             "synthesis_error": result.synthesis_error,
+            "verification_attempts": len(result.verification_attempts),
+            "verification_passed": result.verification_passed,
+            "verification_warning": result.verification_warning,
             "workers": roles,
         }
         logger.info("orchestration run %s", result.run_id, extra={"fugu_run": record})
         logger.debug("orchestration run detail %s: %s", result.run_id, record)
+
+    def _worker_roles(self) -> List[RoleConfig]:
+        return [
+            role
+            for role in self.config.roles
+            if not role.is_synthesizer and not self._is_verifier_role(role)
+        ]
+
+    def _is_verifier_role(self, role: RoleConfig) -> bool:
+        configured_role = self.config.coordinator.verify.role
+        return role.is_verifier or (configured_role is not None and role.name == configured_role)
+
+    def _select_verifier(self) -> Optional[RoleConfig]:
+        verify_config = self.config.coordinator.verify
+        if not verify_config.enabled:
+            return None
+        if verify_config.role is not None:
+            for role in self.config.roles:
+                if role.name == verify_config.role:
+                    return role
+            return None
+        verifiers = [role for role in self.config.roles if role.is_verifier]
+        if not verifiers:
+            return None
+        return verifiers[0]
 
     def _select_synthesizer(self) -> Optional[RoleConfig]:
         synthesizers = [role for role in self.config.roles if role.is_synthesizer]
@@ -470,6 +578,67 @@ class FuguLocalOrchestrator:
             latency_ms=round((time.perf_counter() - started) * 1000, 1),
         )
 
+    def _run_verifier(
+        self,
+        role: RoleConfig,
+        *,
+        attempt: int,
+        original_messages: List[ChatMessage],
+        worker_results: List[WorkerResult],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> VerificationAttempt:
+        verification_messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    f"{role.system_prompt}\n\n"
+                    "You are verifying outputs from local LLM workers before final synthesis. "
+                    "Check whether the worker outputs adequately answer the original user request. "
+                    'Return JSON only: {"pass": true|false, "critique": "..."}. '
+                    "Use pass=false when important issues remain."
+                ).strip(),
+            ),
+            ChatMessage(
+                role="user",
+                content=(
+                    "Original conversation:\n"
+                    f"{_format_messages(original_messages)}\n\n"
+                    "Worker outputs:\n"
+                    f"{_format_worker_results(worker_results)}\n\n"
+                    "Decide whether this is good enough to synthesize for the user."
+                ),
+            ),
+        ]
+        router = self._router_for_role(role)
+        request = ChatRequest(
+            model=router.model_string,
+            messages=verification_messages,
+            temperature=self._temperature(temperature),
+            max_tokens=self._max_tokens(max_tokens),
+        )
+        started = time.perf_counter()
+        try:
+            response = router.chat(request)
+            passed, critique = _parse_verifier_result(response.content)
+            return VerificationAttempt(
+                attempt=attempt,
+                role=role.name,
+                model=role.model,
+                ok=passed,
+                critique=critique,
+                latency_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
+        except Exception as exc:  # noqa: BLE001 - verifier failure should not fail the run.
+            return VerificationAttempt(
+                attempt=attempt,
+                role=role.name,
+                model=role.model,
+                ok=False,
+                error=str(exc),
+                latency_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
+
     def _synthesize(
         self,
         role: RoleConfig,
@@ -556,6 +725,61 @@ def messages_from_dicts(raw_messages: Iterable[dict]) -> List[ChatMessage]:
 
 def _deadline_passed(deadline: Optional[float]) -> bool:
     return deadline is not None and time.perf_counter() >= deadline
+
+
+def _parse_verifier_result(content: str) -> tuple[bool, str]:
+    text = content.strip()
+    payload = _extract_json_object(text)
+    if payload is not None:
+        decision = _coerce_bool(payload.get("pass", payload.get("ok")))
+        if decision is not None:
+            critique = payload.get("critique", payload.get("reason", ""))
+            return decision, str(critique or "")
+
+    upper = text.upper()
+    pass_index = upper.find("PASS")
+    fail_index = upper.find("FAIL")
+    if pass_index >= 0 and (fail_index < 0 or pass_index < fail_index):
+        return True, ""
+    if fail_index >= 0:
+        return False, text
+    return False, text
+
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    candidates = [text]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _coerce_bool(value: object) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "pass", "passed", "ok", "yes"}:
+            return True
+        if normalized in {"false", "fail", "failed", "no"}:
+            return False
+    return None
+
+
+def _format_verifier_retry_instruction(critique: str) -> str:
+    return (
+        "Verifier critique:\n"
+        f"{critique.strip() or 'The verifier did not provide details.'}\n\n"
+        "Revise your worker output to address the critique."
+    )
 
 
 def _majority_vote(results: List[WorkerResult]) -> str:

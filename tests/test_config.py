@@ -165,6 +165,59 @@ class CoordinatorConfigTests(unittest.TestCase):
                 }
             )
 
+    def test_accepts_verifier_role_and_verify_config(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [
+                    {"name": "worker", "model": "m"},
+                    {"name": "verifier", "model": "m", "is_verifier": True},
+                ],
+                "coordinator": {"verify": {"enabled": True, "max_retries": 2}},
+            }
+        )
+
+        self.assertTrue(config.roles[1].is_verifier)
+        self.assertTrue(config.coordinator.verify.enabled)
+        self.assertEqual(config.coordinator.verify.max_retries, 2)
+
+    def test_accepts_explicit_verify_role_name(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [
+                    {"name": "worker", "model": "m"},
+                    {"name": "reviewer", "model": "m"},
+                ],
+                "coordinator": {"verify": {"enabled": True, "max_retries": 1, "role": "reviewer"}},
+            }
+        )
+
+        self.assertEqual(config.coordinator.verify.role, "reviewer")
+
+    def test_rejects_enabled_verify_without_verifier_role(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [{"name": "planner", "model": "m"}],
+                    "coordinator": {"verify": {"enabled": True}},
+                }
+            )
+
+    def test_rejects_negative_verify_retry_budget(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [
+                        {"name": "worker", "model": "m"},
+                        {"name": "verifier", "model": "m", "is_verifier": True},
+                    ],
+                    "coordinator": {"verify": {"enabled": True, "max_retries": -1}},
+                }
+            )
+
 
 class RequestTimeoutConfigTests(unittest.TestCase):
     def test_request_timeout_defaults_to_none(self):

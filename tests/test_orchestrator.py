@@ -20,6 +20,17 @@ class FailingBackend:
         raise RuntimeError("boom")
 
 
+class SequenceBackend:
+    def __init__(self, contents):
+        self.contents = list(contents)
+        self.calls = []
+
+    def chat(self, request):
+        self.calls.append(request)
+        index = min(len(self.calls) - 1, len(self.contents) - 1)
+        return ChatResponse(content=self.contents[index])
+
+
 def make_config(selection_policy="all", synthesizer=True):
     roles = [
         {
@@ -187,6 +198,173 @@ class OrchestratorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def make_verifier_config(max_retries=1, enabled=True, explicit_role=False):
+    verify = {"enabled": enabled, "max_retries": max_retries}
+    if explicit_role:
+        verify["role"] = "verifier"
+    return config_from_dict(
+        {
+            "models": [
+                {"name": "worker-model", "backend": "echo", "model": "mock-worker"},
+                {"name": "verifier-model", "backend": "echo", "model": "mock-verifier"},
+                {"name": "synth-model", "backend": "echo", "model": "mock-synth"},
+            ],
+            "roles": [
+                {"name": "worker", "model": "worker-model", "system_prompt": "work"},
+                {
+                    "name": "verifier",
+                    "model": "verifier-model",
+                    "system_prompt": "verify",
+                    "is_verifier": not explicit_role,
+                },
+                {
+                    "name": "synthesizer",
+                    "model": "synth-model",
+                    "system_prompt": "synth",
+                    "is_synthesizer": True,
+                },
+            ],
+            "orchestrator": {"selection_policy": "all"},
+            "coordinator": {"verify": verify},
+        }
+    )
+
+
+class VerifierRetryTests(unittest.TestCase):
+    def test_verify_disabled_preserves_existing_flow(self):
+        worker = StaticBackend("worker output")
+        verifier = StaticBackend('{"pass": false, "critique": "should not run"}')
+        synth = StaticBackend("final output")
+        orchestrator = FuguLocalOrchestrator(
+            make_verifier_config(enabled=False),
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": synth,
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertEqual(result.content, "final output")
+        self.assertEqual(result.selected_roles, ["worker"])
+        self.assertEqual(result.verification_attempts, [])
+        self.assertIsNone(result.verification_passed)
+        self.assertEqual(len(worker.calls), 1)
+        self.assertEqual(len(verifier.calls), 0)
+
+    def test_verifier_pass_short_circuits_without_retry(self):
+        worker = StaticBackend("worker output")
+        verifier = StaticBackend('{"pass": true, "critique": ""}')
+        synth = StaticBackend("final output")
+        orchestrator = FuguLocalOrchestrator(
+            make_verifier_config(max_retries=2),
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": synth,
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertEqual(result.content, "final output")
+        self.assertTrue(result.verification_passed)
+        self.assertEqual(len(result.verification_attempts), 1)
+        self.assertEqual(len(worker.calls), 1)
+        self.assertEqual(len(verifier.calls), 1)
+        self.assertEqual(len(synth.calls), 1)
+
+    def test_verifier_fail_then_pass_retries_workers_once(self):
+        worker = StaticBackend("worker output")
+        verifier = SequenceBackend(
+            [
+                '{"pass": false, "critique": "add risks"}',
+                '{"pass": true, "critique": ""}',
+            ]
+        )
+        synth = StaticBackend("final output")
+        orchestrator = FuguLocalOrchestrator(
+            make_verifier_config(max_retries=1),
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": synth,
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertEqual(result.content, "final output")
+        self.assertTrue(result.verification_passed)
+        self.assertEqual(len(result.verification_attempts), 2)
+        self.assertEqual(len(worker.calls), 2)
+        self.assertEqual(len(verifier.calls), 2)
+        retry_prompt = worker.calls[1].messages[-1].content
+        self.assertIn("Verifier critique", retry_prompt)
+        self.assertIn("add risks", retry_prompt)
+
+    def test_verifier_budget_exhaustion_returns_best_available_with_warning(self):
+        worker = StaticBackend("worker output")
+        verifier = StaticBackend("FAIL missing evidence")
+        synth = StaticBackend("final output")
+        orchestrator = FuguLocalOrchestrator(
+            make_verifier_config(max_retries=1),
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": synth,
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertFalse(result.verification_passed)
+        self.assertEqual(len(result.verification_attempts), 2)
+        self.assertEqual(len(worker.calls), 2)
+        self.assertEqual(len(verifier.calls), 2)
+        self.assertIsNotNone(result.verification_warning)
+        self.assertTrue(result.content.startswith("Warning: verification did not pass"))
+        self.assertIn("final output", result.content)
+
+    def test_verifier_retry_budget_is_never_exceeded(self):
+        worker = StaticBackend("worker output")
+        verifier = StaticBackend('{"pass": false, "critique": "still wrong"}')
+        orchestrator = FuguLocalOrchestrator(
+            make_verifier_config(max_retries=2),
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": StaticBackend("final output"),
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertFalse(result.verification_passed)
+        self.assertEqual(len(result.verification_attempts), 3)
+        self.assertEqual(len(worker.calls), 3)
+        self.assertEqual(len(verifier.calls), 3)
+
+    def test_explicit_verify_role_is_excluded_from_workers(self):
+        worker = StaticBackend("worker output")
+        verifier = StaticBackend('{"pass": true}')
+        orchestrator = FuguLocalOrchestrator(
+            make_verifier_config(max_retries=1, explicit_role=True),
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": StaticBackend("final output"),
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertEqual(result.selected_roles, ["worker"])
+        self.assertEqual(len(worker.calls), 1)
+        self.assertEqual(len(verifier.calls), 1)
 
 
 class ObservabilityTest(unittest.TestCase):

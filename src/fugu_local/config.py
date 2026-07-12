@@ -53,6 +53,7 @@ class RoleConfig:
     keywords: List[str] = field(default_factory=list)
     always_include: bool = False
     is_synthesizer: bool = False
+    is_verifier: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,12 +80,20 @@ class EnsembleConfig:
 
 
 @dataclass(frozen=True)
+class VerifyConfig:
+    enabled: bool = False
+    max_retries: int = 1
+    role: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class CoordinatorConfig:
     enabled: bool = False
     meta_model: Optional[str] = None
     default_pattern: str = "role_split"
     rules: List[CoordinatorRule] = field(default_factory=list)
     ensemble: EnsembleConfig = field(default_factory=EnsembleConfig)
+    verify: VerifyConfig = field(default_factory=VerifyConfig)
 
 
 @dataclass(frozen=True)
@@ -230,6 +239,7 @@ def _role_from_dict(raw: Any) -> RoleConfig:
         keywords=list(keywords_raw),
         always_include=_optional_bool(obj, "always_include", default=False),
         is_synthesizer=_optional_bool(obj, "is_synthesizer", default=False),
+        is_verifier=_optional_bool(obj, "is_verifier", default=False),
     )
 
 
@@ -252,12 +262,14 @@ def _coordinator_from_dict(raw: Any) -> CoordinatorConfig:
     obj = _required_object(raw, "coordinator")
     rules = [_coordinator_rule_from_dict(item) for item in _optional_list(obj, "rules")]
     ensemble = _ensemble_from_dict(obj.get("ensemble", {}))
+    verify = _verify_from_dict(obj.get("verify", {}))
     return CoordinatorConfig(
         enabled=_optional_bool(obj, "enabled", default=False),
         meta_model=_optional_str(obj, "meta_model"),
         default_pattern=_optional_str(obj, "default_pattern") or "role_split",
         rules=rules,
         ensemble=ensemble,
+        verify=verify,
     )
 
 
@@ -286,6 +298,18 @@ def _ensemble_from_dict(raw: Any) -> EnsembleConfig:
     )
 
 
+def _verify_from_dict(raw: Any) -> VerifyConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "coordinator.verify")
+    max_retries = _optional_int(obj, "max_retries", default=1)
+    return VerifyConfig(
+        enabled=_optional_bool(obj, "enabled", default=False),
+        max_retries=max_retries if max_retries is not None else 1,
+        role=_optional_str(obj, "role"),
+    )
+
+
 def _validate_coordinator(config: FuguLocalConfig, model_names: set) -> None:
     coordinator = config.coordinator
     if coordinator.default_pattern not in SUPPORTED_PATTERNS:
@@ -309,6 +333,20 @@ def _validate_coordinator(config: FuguLocalConfig, model_names: set) -> None:
         raise ConfigError(
             f"Unsupported coordinator.ensemble.vote '{coordinator.ensemble.vote}'. "
             f"Supported: {sorted(SUPPORTED_ENSEMBLE_VOTES)}"
+        )
+    if coordinator.verify.max_retries < 0:
+        raise ConfigError("coordinator.verify.max_retries must be non-negative")
+
+    role_names = {role.name for role in config.roles}
+    flagged_verifiers = [role for role in config.roles if role.is_verifier]
+    if coordinator.verify.role is not None and coordinator.verify.role not in role_names:
+        raise ConfigError(
+            f"coordinator.verify.role references unknown role '{coordinator.verify.role}'"
+        )
+    if coordinator.verify.enabled and coordinator.verify.role is None and not flagged_verifiers:
+        raise ConfigError(
+            "coordinator.verify.enabled=true requires coordinator.verify.role "
+            "or a roles[] entry with is_verifier=true"
         )
 
 
