@@ -106,15 +106,19 @@ def _execute_one(
     if func is None:
         return ToolResult(call.id, call.name, "", error=f"tool '{call.name}' is not registered")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, call.arguments)
-        try:
-            content = future.result(timeout=timeout_seconds)
-        except concurrent.futures.TimeoutError:
-            future.cancel()
-            return ToolResult(call.id, call.name, "", error="tool execution timed out")
-        except Exception as exc:  # noqa: BLE001 - tool failures are captured as results.
-            return ToolResult(call.id, call.name, "", error=str(exc))
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func, call.arguments)
+    try:
+        content = future.result(timeout=timeout_seconds)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        return ToolResult(call.id, call.name, "", error="tool execution timed out")
+    except Exception as exc:  # noqa: BLE001 - tool failures are captured as results.
+        executor.shutdown(wait=False, cancel_futures=True)
+        return ToolResult(call.id, call.name, "", error=str(exc))
+    else:
+        executor.shutdown(wait=True)
 
     if not isinstance(content, str):
         content = str(content)

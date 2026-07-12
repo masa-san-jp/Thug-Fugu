@@ -74,8 +74,9 @@ class ExecuteToolCallsTests(unittest.TestCase):
         self.assertEqual(len(results[0].content), 10)
         self.assertTrue(results[0].truncated)
 
-    def test_timeout_is_enforced(self):
+    def test_timeout_is_enforced_without_waiting_for_tool_completion(self):
         registry = {"slow": lambda args: time.sleep(2) or "done"}
+        started = time.perf_counter()
         results = execute_tool_calls(
             [self._call("slow", {})],
             allowed_tools=["slow"],
@@ -83,7 +84,9 @@ class ExecuteToolCallsTests(unittest.TestCase):
             max_output_chars=100,
             registry=registry,
         )
+        elapsed = time.perf_counter() - started
         self.assertIn("timed out", results[0].error)
+        self.assertLess(elapsed, 1.0)
 
     def test_tool_error_is_captured(self):
         results = execute_tool_calls(

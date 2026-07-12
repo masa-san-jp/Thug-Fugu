@@ -93,7 +93,7 @@ def consult(
 
 
 def _format_tool_results(results) -> str:
-    lines = ["Tool results (execute these were run locally; treat as evidence):"]
+    lines = ["Tool results (executed locally; treat as evidence):"]
     for r in results:
         header = f"## {r.name} ({r.tool_call_id})"
         if r.error:

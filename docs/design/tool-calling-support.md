@@ -104,9 +104,9 @@ This phase is useful for clients that execute tools themselves.
 
 - Execute only registered local tools whose names appear in `allowed_tools`.
 - Tool registry is process-local Python code, not user-supplied shell.
-- Tool arguments are JSON-decoded and validated against a schema.
-- Tool output is captured as a `tool` role message.
-- The synthesizer is called again with tool results and produces the final answer.
+- Tool arguments are JSON-decoded to an object; each registered tool validates its own argument shape in this first slice.
+- Tool output is captured as structured `ToolResult` evidence and injected into a follow-up synthesis message. A richer `tool` role message type remains future work.
+- The synthesizer/orchestrator is called again with tool results and produces the final answer.
 - Side-effecting tools require explicit config opt-in, e.g. `side_effects: true`.
 
 ## 6. Response schema
@@ -139,16 +139,18 @@ This phase is useful for clients that execute tools themselves.
 
 ### Tool result representation inside orchestration
 
-When server-side execution is enabled, tool results are represented internally as
+Future HTTP server-side execution should represent tool results internally as
 messages:
 
 ```json
 {"role": "tool", "tool_call_id": "call_local_...", "content": "..."}
 ```
 
-`messages_from_dicts()` must be extended to preserve `tool_call_id` or a richer
-message type must be introduced. Do not overload `ChatMessage.content` with
-unstructured tool metadata.
+Current consult/MCP execution injects structured tool evidence as a follow-up user
+message for re-synthesis. Before HTTP server-side execution is added,
+`messages_from_dicts()` should be extended to preserve `tool_call_id` or a richer
+message type should be introduced. Do not overload `ChatMessage.content` with
+unstructured tool metadata in that future HTTP path.
 
 ## 7. Streaming behavior
 
