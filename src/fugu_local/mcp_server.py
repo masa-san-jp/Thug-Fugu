@@ -53,9 +53,12 @@ def build_server(config_path: str):  # pragma: no cover - requires optional mcp 
         prompt: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        tool_calls: Optional[list] = None,
     ) -> dict:
         """Delegate a reasoning task to Thug-Fugu's multi-role local LLM orchestration.
 
+        Optionally pass OpenAI-style ``tool_calls`` to execute allow-listed local
+        tools before synthesis (requires tool_calling.enabled and execute=true).
         Returns the synthesized answer plus metadata (pattern, roles, timings).
         """
         return consult(
@@ -63,6 +66,7 @@ def build_server(config_path: str):  # pragma: no cover - requires optional mcp 
             prompt,
             temperature=temperature,
             max_tokens=max_tokens,
+            tool_calls=tool_calls,
             orchestrator=orchestrator,
         )
 
