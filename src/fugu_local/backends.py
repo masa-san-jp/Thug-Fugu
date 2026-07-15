@@ -37,6 +37,54 @@ class ChatRequest:
 class ChatResponse:
     content: str
     raw: Optional[Mapping] = None
+    usage: Optional["TokenUsage"] = None
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    """Token counts reported by a backend. Fields are None when not reported."""
+
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+    @property
+    def known(self) -> bool:
+        return (
+            self.prompt_tokens is not None
+            or self.completion_tokens is not None
+            or self.total_tokens is not None
+        )
+
+
+def _coerce_token_count(value: object) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    return None
+
+
+def _usage_from_openai(response: Mapping) -> Optional[TokenUsage]:
+    usage = response.get("usage") if isinstance(response, Mapping) else None
+    if not isinstance(usage, Mapping):
+        return None
+    prompt = _coerce_token_count(usage.get("prompt_tokens"))
+    completion = _coerce_token_count(usage.get("completion_tokens"))
+    total = _coerce_token_count(usage.get("total_tokens"))
+    parsed = TokenUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
+    return parsed if parsed.known else None
+
+
+def _usage_from_ollama(response: Mapping) -> Optional[TokenUsage]:
+    if not isinstance(response, Mapping):
+        return None
+    prompt = _coerce_token_count(response.get("prompt_eval_count"))
+    completion = _coerce_token_count(response.get("eval_count"))
+    if prompt is None and completion is None:
+        return None
+    total = (prompt or 0) + (completion or 0)
+    return TokenUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
 
 
 class LLMBackend(Protocol):
@@ -81,7 +129,7 @@ class OpenAICompatibleBackend:
             raise BackendError("OpenAI-compatible backend returned an unexpected response") from exc
         if not isinstance(content, str):
             raise BackendError("OpenAI-compatible backend response content is not a string")
-        return ChatResponse(content=content, raw=response)
+        return ChatResponse(content=content, raw=response, usage=_usage_from_openai(response))
 
 
 class OllamaBackend:
@@ -113,7 +161,7 @@ class OllamaBackend:
             raise BackendError("Ollama backend returned an unexpected response") from exc
         if not isinstance(content, str):
             raise BackendError("Ollama backend response content is not a string")
-        return ChatResponse(content=content, raw=response)
+        return ChatResponse(content=content, raw=response, usage=_usage_from_ollama(response))
 
 
 class EchoBackend:

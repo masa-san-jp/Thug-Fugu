@@ -407,7 +407,7 @@ python3 -m coverage report --fail-under=80
 - 適応コーディネーターは recursive coordination は持ちません。Verifier retry loop は `role_split` の任意機能として提供します。
 - `/v1/chat/completions` は最小対応です。`stream: true` は buffered SSE（生成後に chunk 化）で対応します。対応範囲は [OpenAI 互換範囲](docs/reference/openai-compatibility.md) を参照してください。
 - GPU スケジューリングは持ちません。単一GPUの並列度調整、複数物理GPUの静的割当、複数ノード分散は設定と外部サーバー配置で扱います。
-- `usage` は現時点では互換用プレースホルダーです。方針は [usage accounting 方針](docs/reference/usage-accounting.md) を参照してください。
+- `usage` はバックエンドが報告した token usage を worker/synthesizer で集計します。未報告バックエンドでは互換用に `0` を返します。方針は [usage accounting 方針](docs/reference/usage-accounting.md) を参照してください。
 
 ## セキュリティ注意
 

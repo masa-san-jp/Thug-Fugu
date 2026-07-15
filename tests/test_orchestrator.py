@@ -1,18 +1,19 @@
 import unittest
 
-from fugu_local.backends import ChatMessage, ChatResponse
+from fugu_local.backends import ChatMessage, ChatResponse, TokenUsage
 from fugu_local.config import config_from_dict
 from fugu_local.orchestrator import FuguLocalOrchestrator, OrchestrationError
 
 
 class StaticBackend:
-    def __init__(self, content):
+    def __init__(self, content, usage=None):
         self.content = content
+        self.usage = usage
         self.calls = []
 
     def chat(self, request):
         self.calls.append(request)
-        return ChatResponse(content=self.content)
+        return ChatResponse(content=self.content, usage=self.usage)
 
 
 class FailingBackend:
@@ -194,6 +195,35 @@ class OrchestratorTests(unittest.TestCase):
 
         with self.assertRaises(OrchestrationError):
             orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+    def test_usage_aggregates_workers_and_synthesizer(self):
+        planner = StaticBackend(
+            "planner output",
+            usage=TokenUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5),
+        )
+        coder = StaticBackend(
+            "coder output",
+            usage=TokenUsage(prompt_tokens=4, completion_tokens=5, total_tokens=9),
+        )
+        synth = StaticBackend(
+            "final output",
+            usage=TokenUsage(prompt_tokens=6, completion_tokens=7, total_tokens=13),
+        )
+        orchestrator = FuguLocalOrchestrator(
+            make_config(selection_policy="all"),
+            backend_overrides={
+                "planner-model": planner,
+                "coder-model": coder,
+                "synth-model": synth,
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertIsNotNone(result.usage)
+        self.assertEqual(result.usage.prompt_tokens, 12)
+        self.assertEqual(result.usage.completion_tokens, 15)
+        self.assertEqual(result.usage.total_tokens, 27)
 
 
 if __name__ == "__main__":

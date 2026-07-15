@@ -39,9 +39,11 @@ The server returns:
       "finish_reason": "stop"
     }
   ],
-  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+  "usage": {"prompt_tokens": 42, "completion_tokens": 18, "total_tokens": 60}
 }
 ```
+
+`usage` is aggregated from backend-reported counts when available. Backends that do not report usage still produce OpenAI-compatible integer placeholders (`0/0/0`), which should be treated as unknown rather than measured zero.
 
 ## Error behavior
 
@@ -73,7 +75,7 @@ The current minimal API does not attempt full OpenAI compatibility. In particula
 - No function calling
 - No multimodal message content
 - No `/v1/models` endpoint
-- No accurate token usage accounting yet
+- No token estimation when a backend omits usage
 
 ## Compatibility principle
 

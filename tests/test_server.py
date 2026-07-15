@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from unittest import mock
 
-from fugu_local.backends import ChatResponse
+from fugu_local.backends import ChatResponse, TokenUsage
 from fugu_local.config import config_from_dict
 from fugu_local.orchestrator import FuguLocalOrchestrator
 from fugu_local.server import (
@@ -29,6 +29,14 @@ class BlockingBackend:
         if not self.release.wait(timeout=5):
             raise RuntimeError("timed out waiting for release")
         return ChatResponse(content="released")
+
+
+class UsageBackend:
+    def chat(self, request):
+        return ChatResponse(
+            content="usage response",
+            usage=TokenUsage(prompt_tokens=13, completion_tokens=17, total_tokens=30),
+        )
 
 
 class ServerTests(unittest.TestCase):
@@ -73,6 +81,42 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["object"], "chat.completion")
         self.assertEqual(body["choices"][0]["message"]["role"], "assistant")
         self.assertIn("echo:m/mock", body["choices"][0]["message"]["content"])
+        self.assertEqual(
+            body["usage"], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        )
+
+    def test_chat_completions_reports_backend_usage_when_known(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            FuguLocalOrchestrator(config, backend_overrides={"m": UsageBackend()}),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, body = self._post_chat_to(
+                f"http://127.0.0.1:{server.server_port}",
+                {
+                    "model": "fugu-local",
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            body["usage"],
+            {"prompt_tokens": 13, "completion_tokens": 17, "total_tokens": 30},
+        )
 
     def test_streaming_chat_completions_returns_sse(self):
         status, headers, raw = self._post_chat_raw(
