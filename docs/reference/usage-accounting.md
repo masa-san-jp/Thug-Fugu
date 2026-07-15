@@ -2,7 +2,36 @@
 
 ## Current status
 
-Thug-Fugu currently returns placeholder usage values in the OpenAI-compatible response:
+Thug-Fugu aggregates backend-reported token usage when the backend provides it.
+
+Supported sources:
+
+- **OpenAI-compatible backends**: `usage.prompt_tokens`, `usage.completion_tokens`, `usage.total_tokens`
+- **Ollama**: `prompt_eval_count` → prompt tokens, `eval_count` → completion tokens
+
+The orchestrator sums usage across:
+
+1. selected worker roles
+2. optional verifier calls only when those calls are represented as worker/synthesis usage in future revisions
+3. optional synthesizer call
+
+At present, worker and synthesizer usage are aggregated. Verifier call usage is not included in the top-level aggregate yet.
+
+## OpenAI-compatible response
+
+When usage is known, `/v1/chat/completions` returns aggregated counts:
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 18,
+    "total_tokens": 60
+  }
+}
+```
+
+When no backend reports usage, Thug-Fugu keeps OpenAI-compatible integer placeholders:
 
 ```json
 {
@@ -14,37 +43,9 @@ Thug-Fugu currently returns placeholder usage values in the OpenAI-compatible re
 }
 ```
 
-These values should be treated as **unknown**, not as measured token counts.
+Treat `0/0/0` as **unknown**, not as a measured zero.
 
-## Why usage is currently unknown
-
-Thug-Fugu fans a single request out to multiple worker roles and may then call a synthesizer role. This means a single user request can produce several backend requests:
-
-1. One request per selected worker role
-2. Optionally one synthesizer request
-3. Optional fallback deterministic merge if synthesis fails
-
-Accurate accounting requires combining usage from all backend calls. Backends differ in whether and how they report token usage.
-
-## Policy
-
-Until backend usage aggregation is implemented:
-
-- `usage` values are compatibility placeholders.
-- Do not use them for billing, capacity planning, or performance analysis.
-- Prefer wall-clock latency and backend logs for operational monitoring.
-
-## Future implementation guidance
-
-When implementing real usage accounting:
-
-1. Preserve raw backend usage where available.
-2. Track worker usage separately from synthesizer usage.
-3. Aggregate usage into OpenAI-compatible top-level response values.
-4. Expose detailed role-level usage in an optional debug or metadata path.
-5. Avoid adding tokenizer dependencies unless explicitly accepted by the project.
-
-## Proposed aggregation model
+## Aggregation model
 
 ```text
 total_prompt_tokens = sum(worker.prompt_tokens) + synthesizer.prompt_tokens
@@ -52,13 +53,22 @@ total_completion_tokens = sum(worker.completion_tokens) + synthesizer.completion
 total_tokens = total_prompt_tokens + total_completion_tokens
 ```
 
-If a backend does not report usage, mark that role as unknown and avoid presenting the aggregate as exact.
+If any participating call lacks prompt/completion counts, that field is unknown internally. The OpenAI-compatible HTTP shape still emits integer placeholders for unknown fields.
 
-## Open question
+## Programmatic API
 
-For unknown usage, the project still needs to decide whether the OpenAI-compatible API should return:
+`OrchestrationResult.usage` contains a `TokenUsage` object when at least one backend reports usage:
 
-- `0` placeholders
-- `null` values
-- omitted `usage`
-- role-level metadata outside the OpenAI-compatible shape
+```python
+result = orchestrator.chat(messages)
+if result.usage:
+    print(result.usage.prompt_tokens, result.usage.completion_tokens, result.usage.total_tokens)
+```
+
+Each successful `WorkerResult` may also carry role-level `usage`.
+
+## Remaining gaps
+
+- Verifier call usage is not yet included in the aggregate.
+- Streaming responses do not emit final usage chunks; stream mode is currently buffered SSE.
+- Thug-Fugu does not estimate tokens when a backend omits usage. This intentionally avoids adding tokenizer dependencies.

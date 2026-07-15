@@ -1,9 +1,16 @@
 import io
+import json
 import unittest
 import urllib.error
 from unittest import mock
 
-from fugu_local.backends import BackendError, ChatMessage, ChatRequest, OpenAICompatibleBackend
+from fugu_local.backends import (
+    BackendError,
+    ChatMessage,
+    ChatRequest,
+    OllamaBackend,
+    OpenAICompatibleBackend,
+)
 from fugu_local.config import ModelConfig
 
 
@@ -67,6 +74,69 @@ class BackendRedactionTests(unittest.TestCase):
         self.assertIn("Non-JSON response", message)
         self.assertIn("redacted", message)
         self.assertNotIn(secret, message)
+
+
+class UsageParsingTests(unittest.TestCase):
+    def test_openai_compatible_usage_is_preserved(self):
+        backend = OpenAICompatibleBackend(
+            ModelConfig(
+                name="local",
+                backend="openai-compatible",
+                model="mock",
+                base_url="http://localhost:1234",
+            )
+        )
+        payload = {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+        }
+
+        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)):
+            response = backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
+
+        self.assertEqual(response.content, "ok")
+        self.assertIsNotNone(response.usage)
+        self.assertEqual(response.usage.prompt_tokens, 3)
+        self.assertEqual(response.usage.completion_tokens, 5)
+        self.assertEqual(response.usage.total_tokens, 8)
+
+    def test_ollama_usage_is_mapped_from_eval_counts(self):
+        backend = OllamaBackend(
+            ModelConfig(
+                name="local",
+                backend="ollama",
+                model="mock",
+                base_url="http://localhost:11434",
+            )
+        )
+        payload = {
+            "message": {"content": "ok"},
+            "prompt_eval_count": 7,
+            "eval_count": 11,
+        }
+
+        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)):
+            response = backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
+
+        self.assertEqual(response.content, "ok")
+        self.assertIsNotNone(response.usage)
+        self.assertEqual(response.usage.prompt_tokens, 7)
+        self.assertEqual(response.usage.completion_tokens, 11)
+        self.assertEqual(response.usage.total_tokens, 18)
+
+
+class JsonResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
 
 
 if __name__ == "__main__":

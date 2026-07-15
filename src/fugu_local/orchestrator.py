@@ -14,6 +14,7 @@ from .backends import (
     ChatMessage,
     ChatRequest,
     LLMBackend,
+    TokenUsage,
     build_backend,
 )
 from .config import FuguLocalConfig, ModelConfig, ModelPoolConfig, RoleConfig
@@ -35,6 +36,7 @@ class WorkerResult:
     error: Optional[str] = None
     latency_ms: Optional[float] = None
     timed_out: bool = False
+    usage: Optional[TokenUsage] = None
 
     @property
     def ok(self) -> bool:
@@ -67,6 +69,8 @@ class OrchestrationResult:
     verification_attempts: List[VerificationAttempt] = field(default_factory=list)
     verification_passed: Optional[bool] = None
     verification_warning: Optional[str] = None
+    usage: Optional[TokenUsage] = None
+    usage_is_estimate: bool = False
 
 
 class FuguLocalOrchestrator:
@@ -198,6 +202,7 @@ class FuguLocalOrchestrator:
             verification_attempts,
             verification_passed,
             verification_warning,
+            synthesis_usage,
         ) = outcome
 
         if not any(result.ok for result in worker_results):
@@ -221,6 +226,8 @@ class FuguLocalOrchestrator:
             verification_attempts=verification_attempts,
             verification_passed=verification_passed,
             verification_warning=verification_warning,
+            usage=_aggregate_usage(worker_results, synthesis_usage),
+            usage_is_estimate=False,
         )
         self._log_run(result)
         return result
@@ -293,6 +300,7 @@ class FuguLocalOrchestrator:
 
         synthesizer_role: Optional[str] = None
         synthesis_error: Optional[str] = None
+        synthesis_usage: Optional[TokenUsage] = None
         if (
             synthesizer
             and any(result.ok for result in worker_results)
@@ -300,7 +308,7 @@ class FuguLocalOrchestrator:
         ):
             synthesizer_role = synthesizer.name
             try:
-                content = self._synthesize(
+                content, synthesis_usage = self._synthesize(
                     synthesizer,
                     original_messages=messages,
                     worker_results=worker_results,
@@ -325,6 +333,7 @@ class FuguLocalOrchestrator:
             verification_attempts,
             verification_passed,
             verification_warning,
+            synthesis_usage,
         )
 
     def _run_direct(
@@ -345,7 +354,7 @@ class FuguLocalOrchestrator:
             [role], messages, temperature=temperature, max_tokens=max_tokens, deadline=deadline
         )
         content = worker_results[0].content if worker_results[0].ok else ""
-        return ([role.name], worker_results, content, None, None, [], None, None)
+        return ([role.name], worker_results, content, None, None, [], None, None, None)
 
     def _run_parallel_ensemble(
         self,
@@ -381,12 +390,13 @@ class FuguLocalOrchestrator:
         synthesizer = self._select_synthesizer()
         synthesizer_role: Optional[str] = None
         synthesis_error: Optional[str] = None
+        synthesis_usage: Optional[TokenUsage] = None
         ok_results = [result for result in worker_results if result.ok]
 
         if vote == "synth" and synthesizer and ok_results and not _deadline_passed(deadline):
             synthesizer_role = synthesizer.name
             try:
-                content = self._synthesize(
+                content, synthesis_usage = self._synthesize(
                     synthesizer,
                     original_messages=messages,
                     worker_results=worker_results,
@@ -410,6 +420,7 @@ class FuguLocalOrchestrator:
             [],
             None,
             None,
+            synthesis_usage,
         )
 
     def _log_run(self, result: OrchestrationResult) -> None:
@@ -439,6 +450,7 @@ class FuguLocalOrchestrator:
             "verification_attempts": len(result.verification_attempts),
             "verification_passed": result.verification_passed,
             "verification_warning": result.verification_warning,
+            "usage": _usage_log_record(result.usage),
             "workers": roles,
         }
         logger.info("orchestration run %s", result.run_id, extra={"fugu_run": record})
@@ -576,6 +588,7 @@ class FuguLocalOrchestrator:
             model=role.model,
             content=response.content,
             latency_ms=round((time.perf_counter() - started) * 1000, 1),
+            usage=response.usage,
         )
 
     def _run_verifier(
@@ -647,7 +660,7 @@ class FuguLocalOrchestrator:
         worker_results: List[WorkerResult],
         temperature: Optional[float],
         max_tokens: Optional[int],
-    ) -> str:
+    ) -> tuple[str, Optional[TokenUsage]]:
         synthesis_messages = [
             ChatMessage(
                 role="system",
@@ -677,7 +690,7 @@ class FuguLocalOrchestrator:
             max_tokens=self._max_tokens(max_tokens),
         )
         response = router.chat(request)
-        return response.content
+        return response.content, response.usage
 
     def _build_role_request(
         self,
@@ -725,6 +738,46 @@ def messages_from_dicts(raw_messages: Iterable[dict]) -> List[ChatMessage]:
 
 def _deadline_passed(deadline: Optional[float]) -> bool:
     return deadline is not None and time.perf_counter() >= deadline
+
+
+def _aggregate_usage(
+    worker_results: List[WorkerResult], synthesis_usage: Optional[TokenUsage]
+) -> Optional[TokenUsage]:
+    usages = [result.usage for result in worker_results if result.usage is not None]
+    if synthesis_usage is not None:
+        usages.append(synthesis_usage)
+    if not usages:
+        return None
+
+    prompt_known = all(usage.prompt_tokens is not None for usage in usages)
+    completion_known = all(usage.completion_tokens is not None for usage in usages)
+    total_known = all(usage.total_tokens is not None for usage in usages)
+
+    prompt = sum(usage.prompt_tokens or 0 for usage in usages) if prompt_known else None
+    completion = sum(usage.completion_tokens or 0 for usage in usages) if completion_known else None
+    if total_known:
+        total = sum(usage.total_tokens or 0 for usage in usages)
+    elif prompt is not None and completion is not None:
+        total = prompt + completion
+    else:
+        total = None
+
+    aggregated = TokenUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+    )
+    return aggregated if aggregated.known else None
+
+
+def _usage_log_record(usage: Optional[TokenUsage]) -> Optional[dict]:
+    if usage is None:
+        return None
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+    }
 
 
 def _parse_verifier_result(content: str) -> tuple[bool, str]:

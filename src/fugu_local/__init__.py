@@ -1,5 +1,6 @@
 """Local LLM orchestration bridge inspired by Thug AI Fugu."""
 
+from .backends import TokenUsage
 from .config import (
     ConfigError,
     CoordinatorConfig,
@@ -36,6 +37,7 @@ __all__ = [
     "ServerEndpoint",
     "ToolCall",
     "ToolResult",
+    "TokenUsage",
     "execute_tool_calls",
     "parse_tool_calls",
     "derive_server_plan",

@@ -10,6 +10,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 
+from .backends import TokenUsage
 from .config import FuguLocalConfig
 from .orchestrator import FuguLocalOrchestrator, OrchestrationError, messages_from_dicts
 
@@ -101,7 +102,14 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         if body.get("stream") is True:
             self._write_chat_completion_stream(model=model, content=result.content)
         else:
-            self._write_json(200, _chat_completion_response(model=model, content=result.content))
+            self._write_json(
+                200,
+                _chat_completion_response(
+                    model=model,
+                    content=result.content,
+                    usage=result.usage,
+                ),
+            )
 
     def log_message(self, format: str, *args: Any) -> None:
         # Keep the default server quiet when embedded in development tooling.
@@ -361,7 +369,9 @@ def _chat_completion_chunk(
     }
 
 
-def _chat_completion_response(model: str, content: str) -> Dict[str, Any]:
+def _chat_completion_response(
+    model: str, content: str, usage: Optional[TokenUsage] = None
+) -> Dict[str, Any]:
     created = int(time.time())
     return {
         "id": f"chatcmpl-local-{created}",
@@ -375,5 +385,18 @@ def _chat_completion_response(model: str, content: str) -> Dict[str, Any]:
                 "finish_reason": "stop",
             }
         ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": _usage_to_openai_dict(usage),
+    }
+
+
+def _usage_to_openai_dict(usage: Optional[TokenUsage]) -> Dict[str, int]:
+    if usage is None:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    prompt = usage.prompt_tokens or 0
+    completion = usage.completion_tokens or 0
+    total = usage.total_tokens if usage.total_tokens is not None else prompt + completion
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
     }
