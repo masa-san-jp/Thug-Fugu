@@ -22,14 +22,16 @@ class FailingBackend:
 
 
 class SequenceBackend:
-    def __init__(self, contents):
+    def __init__(self, contents, usages=None):
         self.contents = list(contents)
+        self.usages = list(usages or [])
         self.calls = []
 
     def chat(self, request):
         self.calls.append(request)
         index = min(len(self.calls) - 1, len(self.contents) - 1)
-        return ChatResponse(content=self.contents[index])
+        usage = self.usages[index] if index < len(self.usages) else None
+        return ChatResponse(content=self.contents[index], usage=usage)
 
 
 def make_config(selection_policy="all", synthesizer=True):
@@ -335,6 +337,42 @@ class VerifierRetryTests(unittest.TestCase):
         retry_prompt = worker.calls[1].messages[-1].content
         self.assertIn("Verifier critique", retry_prompt)
         self.assertIn("add risks", retry_prompt)
+
+    def test_usage_includes_retried_workers_verifier_attempts_and_synthesizer(self):
+        worker = StaticBackend(
+            "worker output",
+            usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+        verifier = SequenceBackend(
+            [
+                '{"pass": false, "critique": "add risks"}',
+                '{"pass": true, "critique": ""}',
+            ],
+            usages=[
+                TokenUsage(prompt_tokens=3, completion_tokens=4, total_tokens=7),
+                TokenUsage(prompt_tokens=5, completion_tokens=6, total_tokens=11),
+            ],
+        )
+        synth = StaticBackend(
+            "final output",
+            usage=TokenUsage(prompt_tokens=7, completion_tokens=8, total_tokens=15),
+        )
+        orchestrator = FuguLocalOrchestrator(
+            make_verifier_config(max_retries=1),
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": synth,
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertTrue(result.verification_passed)
+        self.assertIsNotNone(result.usage)
+        self.assertEqual(result.usage.prompt_tokens, 17)
+        self.assertEqual(result.usage.completion_tokens, 22)
+        self.assertEqual(result.usage.total_tokens, 39)
 
     def test_verifier_budget_exhaustion_returns_best_available_with_warning(self):
         worker = StaticBackend("worker output")
