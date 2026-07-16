@@ -1,17 +1,18 @@
 import unittest
 
-from fugu_local.backends import ChatResponse
+from fugu_local.backends import ChatResponse, TokenUsage
 from fugu_local.config import config_from_dict
 from fugu_local.consult import consult
 from fugu_local.orchestrator import FuguLocalOrchestrator
 
 
 class StaticBackend:
-    def __init__(self, content):
+    def __init__(self, content, usage=None):
         self.content = content
+        self.usage = usage
 
     def chat(self, request):
-        return ChatResponse(content=self.content)
+        return ChatResponse(content=self.content, usage=self.usage)
 
 
 def _config():
@@ -48,10 +49,35 @@ class ConsultTests(unittest.TestCase):
         self.assertTrue(result["run_id"])
         self.assertEqual(result["workers"][0]["role"], "planner")
         self.assertTrue(result["workers"][0]["ok"])
+        self.assertIn("usage", result)
+        self.assertIn("verification", result)
 
     def test_consult_rejects_empty_prompt(self):
         with self.assertRaises(ValueError):
             consult(_config(), "   ")
+
+    def test_consult_returns_usage_when_available(self):
+        orchestrator = FuguLocalOrchestrator(
+            _config(),
+            backend_overrides={
+                "planner-model": StaticBackend(
+                    "planner output",
+                    usage=TokenUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5),
+                ),
+                "synth-model": StaticBackend(
+                    "final answer",
+                    usage=TokenUsage(prompt_tokens=7, completion_tokens=11, total_tokens=18),
+                ),
+            },
+        )
+
+        result = consult(_config(), "design something", orchestrator=orchestrator)
+
+        self.assertEqual(
+            result["usage"],
+            {"prompt_tokens": 9, "completion_tokens": 14, "total_tokens": 23},
+        )
+        self.assertEqual(result["verification"], {"passed": None, "warning": None, "attempts": []})
 
     def test_consult_result_is_json_serializable(self):
         import json
