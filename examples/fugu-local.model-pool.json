@@ -9,7 +9,8 @@
         "http://127.0.0.1:11435"
       ],
       "policy": "least_busy",
-      "timeout_seconds": 300
+      "timeout_seconds": 300,
+      "cooldown_seconds": 30
     }
   ],
   "models": [

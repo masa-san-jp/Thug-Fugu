@@ -43,6 +43,7 @@ class ModelPoolConfig:
     policy: str = "round_robin"
     api_key: Optional[str] = None
     timeout_seconds: float = 120.0
+    cooldown_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -408,6 +409,7 @@ def _model_pool_from_dict(raw: Any) -> ModelPoolConfig:
         policy=_optional_str(obj, "policy") or "round_robin",
         api_key=_expand_optional_env(_optional_str(obj, "api_key")),
         timeout_seconds=_optional_number(obj, "timeout_seconds", default=120.0),
+        cooldown_seconds=_optional_number(obj, "cooldown_seconds", default=0.0),
     )
 
 
@@ -427,6 +429,8 @@ def _validate_model_pools(config: FuguLocalConfig) -> None:
             )
         if pool.timeout_seconds <= 0:
             raise ConfigError(f"timeout_seconds must be positive for model_pool '{pool.name}'")
+        if pool.cooldown_seconds < 0:
+            raise ConfigError(f"cooldown_seconds must be non-negative for model_pool '{pool.name}'")
 
 
 def _optional_list(raw: Mapping[str, Any], key: str) -> List[Any]:

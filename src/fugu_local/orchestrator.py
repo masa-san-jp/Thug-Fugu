@@ -102,7 +102,12 @@ class FuguLocalOrchestrator:
             members = [
                 self._member_for_pool_endpoint(pool, base_url) for base_url in pool.endpoints
             ]
-            routers[pool.name] = ModelRouter(pool.model, members, policy=pool.policy)
+            routers[pool.name] = ModelRouter(
+                pool.model,
+                members,
+                policy=pool.policy,
+                cooldown_seconds=pool.cooldown_seconds,
+            )
         return routers
 
     def _member_for_model(self, model: ModelConfig) -> RouterMember:
