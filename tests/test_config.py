@@ -276,6 +276,36 @@ class ModelPoolConfigTests(unittest.TestCase):
         self.assertEqual(config.model_pools[0].name, "fast")
         self.assertEqual(config.model_pools[0].policy, "least_busy")
         self.assertEqual(len(config.model_pools[0].endpoints), 2)
+        self.assertEqual(config.model_pools[0].cooldown_seconds, 0.0)
+
+    def test_accepts_pool_cooldown_seconds(self):
+        config = config_from_dict(
+            self._with_pool(
+                {
+                    "name": "fast",
+                    "backend": "ollama",
+                    "model": "gpt-oss:20b",
+                    "endpoints": ["http://127.0.0.1:11434"],
+                    "cooldown_seconds": 30,
+                }
+            )
+        )
+
+        self.assertEqual(config.model_pools[0].cooldown_seconds, 30.0)
+
+    def test_rejects_negative_pool_cooldown_seconds(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._with_pool(
+                    {
+                        "name": "fast",
+                        "backend": "ollama",
+                        "model": "gpt-oss:20b",
+                        "endpoints": ["http://127.0.0.1:11434"],
+                        "cooldown_seconds": -1,
+                    }
+                )
+            )
 
     def test_rejects_pool_without_endpoints(self):
         with self.assertRaises(ConfigError):

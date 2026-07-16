@@ -54,6 +54,22 @@ class ModelRouterTests(unittest.TestCase):
         self.assertEqual(down.calls, 1)
         self.assertEqual(up.calls, 1)
 
+    def test_failed_member_is_deprioritized_during_cooldown(self):
+        down = RecordingBackend("down", fail=True)
+        up = RecordingBackend("up")
+        router = ModelRouter(
+            "m",
+            [RouterMember("down", down), RouterMember("up", up)],
+            policy="round_robin",
+            cooldown_seconds=60,
+        )
+
+        self.assertEqual(router.chat(_request()).content, "up")
+        self.assertEqual(router.chat(_request()).content, "up")
+
+        self.assertEqual(down.calls, 1)
+        self.assertEqual(up.calls, 2)
+
     def test_raises_when_all_members_fail(self):
         router = ModelRouter(
             "m",

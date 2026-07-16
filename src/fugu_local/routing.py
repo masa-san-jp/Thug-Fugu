@@ -13,6 +13,7 @@ member fails, the last error is raised.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -28,6 +29,8 @@ class RouterMember:
     key: str
     backend: LLMBackend
     busy: int = 0
+    failures: int = 0
+    cooldown_until: float = 0.0
 
 
 class ModelRouter:
@@ -39,12 +42,16 @@ class ModelRouter:
         members: List[RouterMember],
         *,
         policy: str = "round_robin",
+        cooldown_seconds: float = 0.0,
+        unhealthy_threshold: int = 1,
     ):
         if not members:
             raise RoutingError("ModelRouter requires at least one member")
         self.model_string = model_string
         self._members = members
         self._policy = policy
+        self._cooldown_seconds = max(0.0, cooldown_seconds)
+        self._unhealthy_threshold = max(1, unhealthy_threshold)
         self._lock = threading.Lock()
         self._round_robin_index = 0
 
@@ -58,9 +65,12 @@ class ModelRouter:
         for member in order:
             self._acquire(member)
             try:
-                return member.backend.chat(request)
+                response = member.backend.chat(request)
+                self._record_success(member)
+                return response
             except Exception as exc:  # noqa: BLE001 - try next member on any failure.
                 last_exc = exc
+                self._record_failure(member)
             finally:
                 self._release(member)
         assert last_exc is not None  # order is non-empty, so a failure must have occurred.
@@ -68,12 +78,30 @@ class ModelRouter:
 
     def _attempt_order(self) -> List[RouterMember]:
         with self._lock:
+            now = time.monotonic()
             if self._policy == "least_busy":
-                # Stable sort keeps config order among equally-busy members.
-                return sorted(self._members, key=lambda member: member.busy)
-            start = self._round_robin_index
-            self._round_robin_index = (self._round_robin_index + 1) % len(self._members)
-            return self._members[start:] + self._members[:start]
+                # Stable sort keeps config order among equally-busy members. Members in
+                # cooldown are deprioritized but never removed, so a fully-degraded pool
+                # still attempts every endpoint.
+                base = sorted(self._members, key=lambda member: member.busy)
+            else:
+                start = self._round_robin_index
+                self._round_robin_index = (self._round_robin_index + 1) % len(self._members)
+                base = self._members[start:] + self._members[:start]
+            return sorted(base, key=lambda member: member.cooldown_until > now)
+
+    def _record_success(self, member: RouterMember) -> None:
+        with self._lock:
+            member.failures = 0
+            member.cooldown_until = 0.0
+
+    def _record_failure(self, member: RouterMember) -> None:
+        if self._cooldown_seconds <= 0:
+            return
+        with self._lock:
+            member.failures += 1
+            if member.failures >= self._unhealthy_threshold:
+                member.cooldown_until = time.monotonic() + self._cooldown_seconds
 
     def _acquire(self, member: RouterMember) -> None:
         with self._lock:
