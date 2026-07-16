@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from typing import Optional
 
 from .backends import ChatMessage
 from .config import ConfigError, load_config
+from .consult import consult
 from .orchestrator import FuguLocalOrchestrator, OrchestrationError
 from .server import DEFAULT_MAX_CONCURRENT_REQUESTS, serve, validate_bind_host
 
@@ -24,6 +26,11 @@ def main(argv: Optional[list] = None) -> int:
     run_parser.add_argument("--config", required=True, help="Path to JSON config")
     run_parser.add_argument("--temperature", type=float, default=None)
     run_parser.add_argument("--max-tokens", type=int, default=None)
+    run_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a JSON object with answer plus usage/verification/worker metadata",
+    )
 
     serve_parser = subparsers.add_parser("serve", help="Serve an OpenAI-compatible API")
     serve_parser.add_argument("--config", required=True, help="Path to JSON config")
@@ -82,6 +89,20 @@ def main(argv: Optional[list] = None) -> int:
 
     if args.command == "run":
         orchestrator = FuguLocalOrchestrator(config)
+        if args.json:
+            try:
+                payload = consult(
+                    config,
+                    args.prompt,
+                    temperature=args.temperature,
+                    max_tokens=args.max_tokens,
+                    orchestrator=orchestrator,
+                )
+            except OrchestrationError as exc:
+                print(f"Orchestration error: {exc}", file=sys.stderr)
+                return 1
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
         try:
             result = orchestrator.chat(
                 [ChatMessage(role="user", content=args.prompt)],
