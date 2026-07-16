@@ -72,11 +72,16 @@ It returns a JSON object:
   "synthesizer_role": "synthesizer",
   "run_id": "…",
   "latency_ms": 1234.5,
+  "usage": {"prompt_tokens": 42, "completion_tokens": 18, "total_tokens": 60},
+  "verification": {"passed": null, "warning": null, "attempts": []},
   "workers": [
     {"role": "thinker", "model": "ollama-general", "ok": true, "latency_ms": 800.0}
   ]
 }
 ```
+
+`usage` is aggregated backend-reported token usage (null when no backend reports it).
+`verification` reports the verifier retry loop outcome when enabled.
 
 ## Async task pattern
 

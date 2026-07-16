@@ -77,6 +77,21 @@ def consult(
         "synthesis_error": result.synthesis_error,
         "run_id": result.run_id,
         "latency_ms": result.latency_ms,
+        "usage": _usage_payload(result.usage),
+        "verification": {
+            "passed": result.verification_passed,
+            "warning": result.verification_warning,
+            "attempts": [
+                {
+                    "attempt": attempt.attempt,
+                    "role": attempt.role,
+                    "ok": attempt.ok,
+                    "error": attempt.error,
+                    "latency_ms": attempt.latency_ms,
+                }
+                for attempt in result.verification_attempts
+            ],
+        },
         "tool_results": tool_results_payload,
         "workers": [
             {
@@ -89,6 +104,16 @@ def consult(
             }
             for worker in result.worker_results
         ],
+    }
+
+
+def _usage_payload(usage) -> Optional[Dict[str, Any]]:
+    if usage is None:
+        return None
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
     }
 
 
