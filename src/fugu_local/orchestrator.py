@@ -52,6 +52,7 @@ class VerificationAttempt:
     critique: str = ""
     error: Optional[str] = None
     latency_ms: Optional[float] = None
+    usage: Optional[TokenUsage] = None
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,7 @@ class FuguLocalOrchestrator:
             verification_attempts,
             verification_passed,
             verification_warning,
+            accounting_worker_results,
             synthesis_usage,
         ) = outcome
 
@@ -226,7 +228,11 @@ class FuguLocalOrchestrator:
             verification_attempts=verification_attempts,
             verification_passed=verification_passed,
             verification_warning=verification_warning,
-            usage=_aggregate_usage(worker_results, synthesis_usage),
+            usage=_aggregate_usage(
+                accounting_worker_results,
+                verification_attempts,
+                synthesis_usage,
+            ),
             usage_is_estimate=False,
         )
         self._log_run(result)
@@ -249,6 +255,7 @@ class FuguLocalOrchestrator:
             raise OrchestrationError("No worker roles are configured")
 
         worker_results: List[WorkerResult] = []
+        accounting_worker_results: List[WorkerResult] = []
         verification_attempts: List[VerificationAttempt] = []
         verification_passed: Optional[bool] = None
         verification_warning: Optional[str] = None
@@ -264,6 +271,7 @@ class FuguLocalOrchestrator:
                 max_tokens=max_tokens,
                 deadline=deadline,
             )
+            accounting_worker_results.extend(worker_results)
 
             if (
                 not verify_config.enabled
@@ -333,6 +341,7 @@ class FuguLocalOrchestrator:
             verification_attempts,
             verification_passed,
             verification_warning,
+            accounting_worker_results,
             synthesis_usage,
         )
 
@@ -354,7 +363,18 @@ class FuguLocalOrchestrator:
             [role], messages, temperature=temperature, max_tokens=max_tokens, deadline=deadline
         )
         content = worker_results[0].content if worker_results[0].ok else ""
-        return ([role.name], worker_results, content, None, None, [], None, None, None)
+        return (
+            [role.name],
+            worker_results,
+            content,
+            None,
+            None,
+            [],
+            None,
+            None,
+            worker_results,
+            None,
+        )
 
     def _run_parallel_ensemble(
         self,
@@ -420,6 +440,7 @@ class FuguLocalOrchestrator:
             [],
             None,
             None,
+            worker_results,
             synthesis_usage,
         )
 
@@ -641,6 +662,7 @@ class FuguLocalOrchestrator:
                 ok=passed,
                 critique=critique,
                 latency_ms=round((time.perf_counter() - started) * 1000, 1),
+                usage=response.usage,
             )
         except Exception as exc:  # noqa: BLE001 - verifier failure should not fail the run.
             return VerificationAttempt(
@@ -741,9 +763,12 @@ def _deadline_passed(deadline: Optional[float]) -> bool:
 
 
 def _aggregate_usage(
-    worker_results: List[WorkerResult], synthesis_usage: Optional[TokenUsage]
+    worker_results: List[WorkerResult],
+    verification_attempts: List[VerificationAttempt],
+    synthesis_usage: Optional[TokenUsage],
 ) -> Optional[TokenUsage]:
     usages = [result.usage for result in worker_results if result.usage is not None]
+    usages.extend(attempt.usage for attempt in verification_attempts if attempt.usage is not None)
     if synthesis_usage is not None:
         usages.append(synthesis_usage)
     if not usages:

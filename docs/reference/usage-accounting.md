@@ -12,10 +12,10 @@ Supported sources:
 The orchestrator sums usage across:
 
 1. selected worker roles
-2. optional verifier calls only when those calls are represented as worker/synthesis usage in future revisions
+2. optional verifier calls
 3. optional synthesizer call
 
-At present, worker and synthesizer usage are aggregated. Verifier call usage is not included in the top-level aggregate yet.
+Worker retries and verifier retries are counted as separate backend calls. For example, if workers run, verifier fails, workers retry, verifier passes, and then synthesizer runs, all of those backend-reported usages are included.
 
 ## OpenAI-compatible response
 
@@ -48,8 +48,8 @@ Treat `0/0/0` as **unknown**, not as a measured zero.
 ## Aggregation model
 
 ```text
-total_prompt_tokens = sum(worker.prompt_tokens) + synthesizer.prompt_tokens
-total_completion_tokens = sum(worker.completion_tokens) + synthesizer.completion_tokens
+total_prompt_tokens = sum(worker_attempt.prompt_tokens) + sum(verifier.prompt_tokens) + synthesizer.prompt_tokens
+total_completion_tokens = sum(worker_attempt.completion_tokens) + sum(verifier.completion_tokens) + synthesizer.completion_tokens
 total_tokens = total_prompt_tokens + total_completion_tokens
 ```
 
@@ -69,6 +69,5 @@ Each successful `WorkerResult` may also carry role-level `usage`.
 
 ## Remaining gaps
 
-- Verifier call usage is not yet included in the aggregate.
 - Streaming responses do not emit final usage chunks; stream mode is currently buffered SSE.
 - Thug-Fugu does not estimate tokens when a backend omits usage. This intentionally avoids adding tokenizer dependencies.
