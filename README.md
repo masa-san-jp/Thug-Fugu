@@ -95,6 +95,14 @@ PYTHONPATH=src python3 -m fugu_local run \
 
 インストール後は `fugu-local run --config ... "質問"` でも実行できます。
 
+`--json` を付けると、回答に加えて usage・verification・worker などのメタデータを JSON で受け取れます（エージェントから呼ぶとき向け）。
+
+```bash
+PYTHONPATH=src python3 -m fugu_local run --json \
+  --config examples/fugu-local.echo.json \
+  "設計をレビューして"
+```
+
 ### 3. HTTP サーバー（OpenAI Chat Completions 互換）
 
 ```bash
