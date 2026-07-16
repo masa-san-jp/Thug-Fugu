@@ -136,6 +136,48 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(chunks[0]["choices"][0]["delta"], {"role": "assistant"})
         self.assertIn("echo:m/mock", chunks[1]["choices"][0]["delta"]["content"])
         self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertNotIn("usage", chunks[-1])
+
+    def test_streaming_chat_completions_can_include_usage_chunk(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            FuguLocalOrchestrator(config, backend_overrides={"m": UsageBackend()}),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, headers, raw = self._post_chat_raw_to(
+                f"http://127.0.0.1:{server.server_port}",
+                {
+                    "model": "fugu-local",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", headers["content-type"])
+        events = _parse_sse_events(raw.decode("utf-8"))
+        self.assertEqual(events[-1], "[DONE]")
+        chunks = [json.loads(event) for event in events[:-1]]
+        usage_chunk = chunks[-1]
+        self.assertEqual(usage_chunk["choices"], [])
+        self.assertEqual(
+            usage_chunk["usage"],
+            {"prompt_tokens": 13, "completion_tokens": 17, "total_tokens": 30},
+        )
 
     def test_rejects_non_boolean_stream(self):
         status, body = self._post_chat(
@@ -144,6 +186,18 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertIn("stream", body["error"]["message"])
+
+    def test_rejects_invalid_stream_options_include_usage(self):
+        status, body = self._post_chat(
+            {
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+                "stream_options": {"include_usage": "true"},
+            }
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("include_usage", body["error"]["message"])
 
     def test_rejects_tool_calling_requests(self):
         status, body = self._post_chat(
@@ -384,9 +438,12 @@ class ServerTests(unittest.TestCase):
         return self._open_json(request)
 
     def _post_chat_raw(self, payload):
+        return self._post_chat_raw_to(self.base_url, payload)
+
+    def _post_chat_raw_to(self, base_url, payload):
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
-            f"{self.base_url}/v1/chat/completions",
+            f"{base_url}/v1/chat/completions",
             data=data,
             headers={"content-type": "application/json"},
             method="POST",

@@ -100,7 +100,12 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
 
         model = body.get("model") or "fugu-local"
         if body.get("stream") is True:
-            self._write_chat_completion_stream(model=model, content=result.content)
+            self._write_chat_completion_stream(
+                model=model,
+                content=result.content,
+                usage=result.usage,
+                include_usage=_stream_include_usage(body),
+            )
         else:
             self._write_json(
                 200,
@@ -151,12 +156,24 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _write_chat_completion_stream(self, *, model: str, content: str) -> None:
+    def _write_chat_completion_stream(
+        self,
+        *,
+        model: str,
+        content: str,
+        usage: Optional[TokenUsage] = None,
+        include_usage: bool = False,
+    ) -> None:
         self.send_response(200)
         self.send_header("content-type", "text/event-stream; charset=utf-8")
         self.send_header("cache-control", "no-cache")
         self.end_headers()
-        for event in _chat_completion_stream_events(model=model, content=content):
+        for event in _chat_completion_stream_events(
+            model=model,
+            content=content,
+            usage=usage,
+            include_usage=include_usage,
+        ):
             self.wfile.write(event)
         self.wfile.flush()
 
@@ -167,9 +184,25 @@ _TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 def _validate_chat_completion_request(body: Dict[str, Any], tool_calling=None) -> None:
     if "stream" in body and not isinstance(body.get("stream"), bool):
         raise ValueError("stream must be a boolean when provided")
+    _validate_stream_options(body)
     if "tools" in body or "tool_choice" in body:
         _validate_tool_calling_request(body, tool_calling)
     _validate_messages_schema(body)
+
+
+def _validate_stream_options(body: Dict[str, Any]) -> None:
+    if "stream_options" not in body:
+        return
+    options = body["stream_options"]
+    if not isinstance(options, dict):
+        raise ValueError("stream_options must be an object when provided")
+    if "include_usage" in options and not isinstance(options["include_usage"], bool):
+        raise ValueError("stream_options.include_usage must be a boolean when provided")
+
+
+def _stream_include_usage(body: Dict[str, Any]) -> bool:
+    options = body.get("stream_options")
+    return isinstance(options, dict) and options.get("include_usage") is True
 
 
 def _validate_tool_calling_request(body: Dict[str, Any], tool_calling) -> None:
@@ -308,7 +341,12 @@ def serve(
     httpd.serve_forever()
 
 
-def _chat_completion_stream_events(model: str, content: str) -> list:
+def _chat_completion_stream_events(
+    model: str,
+    content: str,
+    usage: Optional[TokenUsage] = None,
+    include_usage: bool = False,
+) -> list:
     created = int(time.time())
     completion_id = f"chatcmpl-local-{created}"
     chunks = [
@@ -339,6 +377,18 @@ def _chat_completion_stream_events(model: str, content: str) -> list:
             finish_reason="stop",
         )
     )
+    if include_usage:
+        chunks.append(
+            _chat_completion_chunk(
+                completion_id=completion_id,
+                created=created,
+                model=model,
+                delta={},
+                finish_reason=None,
+                usage=usage,
+                choices=[],
+            )
+        )
     events = [
         f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8") for chunk in chunks
     ]
@@ -353,13 +403,17 @@ def _chat_completion_chunk(
     model: str,
     delta: Dict[str, str],
     finish_reason: Optional[str],
+    usage: Optional[TokenUsage] = None,
+    choices: Optional[list] = None,
 ) -> Dict[str, Any]:
-    return {
+    payload = {
         "id": completion_id,
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
-        "choices": [
+        "choices": choices
+        if choices is not None
+        else [
             {
                 "index": 0,
                 "delta": delta,
@@ -367,6 +421,11 @@ def _chat_completion_chunk(
             }
         ],
     }
+    if usage is not None:
+        payload["usage"] = _usage_to_openai_dict(usage)
+    elif choices == []:
+        payload["usage"] = _usage_to_openai_dict(None)
+    return payload
 
 
 def _chat_completion_response(

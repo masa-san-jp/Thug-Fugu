@@ -19,6 +19,7 @@ POST /v1/chat/completions
 | `temperature` | Supported | Optional. Passed through to backend requests. |
 | `max_tokens` | Supported | Optional. Passed as `max_tokens` for OpenAI-compatible backends and `num_predict` for Ollama. |
 | `stream` | Partial | `false`/omitted returns JSON. `true` returns OpenAI-style SSE, but currently streams the already-completed final answer as buffered chunks rather than backend token deltas. |
+| `stream_options.include_usage` | Partial | When `stream=true` and `include_usage=true`, emits a final usage chunk before `[DONE]`. Usage is backend-reported/aggregated when known, otherwise `0/0/0`. |
 | `tools` | Shape-only | Rejected with 400 unless `tool_calling.enabled=true`. When enabled, tool schemas are validated and accepted, but tools are not yet forwarded to backends or executed. See `docs/design/tool-calling-support.md`. |
 | `tool_choice` | Partial | `none`/`auto` accepted when tool calling is enabled. `required` and named function choice return 400 (not supported in shape-only mode). |
 
@@ -70,7 +71,7 @@ Typical status codes:
 
 The current minimal API does not attempt full OpenAI compatibility. In particular:
 
-- `stream: true` is buffered SSE: worker fan-out and synthesizer still run to completion before the server emits SSE chunks.
+- `stream: true` is buffered SSE: worker fan-out and synthesizer still run to completion before the server emits SSE chunks. `stream_options.include_usage=true` can include final aggregated usage, but this is still emitted after generation completes.
 - Tool calling is shape-only: schemas are validated when enabled, but tools are not forwarded to backends or executed yet (see `docs/design/tool-calling-support.md`)
 - No function calling
 - No multimodal message content

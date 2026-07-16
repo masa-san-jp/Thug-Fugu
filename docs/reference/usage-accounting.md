@@ -67,7 +67,12 @@ if result.usage:
 
 Each successful `WorkerResult` may also carry role-level `usage`.
 
+## Streaming
+
+For `stream=true`, set `stream_options.include_usage=true` to receive a final usage chunk before `[DONE]`.
+
+The stream is still buffered SSE: usage is emitted after worker/synthesizer execution finishes, not as live token deltas.
+
 ## Remaining gaps
 
-- Streaming responses do not emit final usage chunks; stream mode is currently buffered SSE.
 - Thug-Fugu does not estimate tokens when a backend omits usage. This intentionally avoids adding tokenizer dependencies.
