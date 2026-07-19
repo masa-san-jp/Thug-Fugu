@@ -420,6 +420,22 @@ python3 -m coverage report --fail-under=80
 - GPU スケジューリングは持ちません。単一GPUの並列度調整、複数物理GPUの静的割当、複数ノード分散は設定と外部サーバー配置で扱います。
 - `usage` はバックエンドが報告した token usage を worker/synthesizer で集計します。未報告バックエンドでは互換用に `0` を返します。方針は [usage accounting 方針](docs/reference/usage-accounting.md) を参照してください。
 
+## ロードマップ: 残りの大きな未実装
+
+実運用に必要な最小ライン（Agent-Lab / Claude Code から明示的に呼ぶローカル非同期サブエージェント、verifier retry、usage、model pool failover/cooldown、MCP/CLI JSON metadata）は実装済みです。残りは下記の大きめの拡張です。いずれも仕様・実装計画を分離してあります。
+
+| 項目 | 現状 | 実装するなら最初の切り方 | 設計書 |
+|---|---|---|---|
+| HTTP server-side tool execution | HTTP は tool schema の shape-only 検証。`consult()` / MCP は allow-listed tool 実行済み | まず HTTP request の明示 `tool_calls` を既存 allow-list 実行に流す。backend に tool call を生成させるのは後続 | [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md) |
+| true token streaming | `stream:true` は buffered SSE。生成後に chunk 化する | まず `direct` pattern の単一 backend call だけ token streaming。role_split は worker 完了後の synthesizer streaming を後続にする | [true-token-streaming.md](docs/design/true-token-streaming.md) |
+| active health polling / queue | 失敗時 failover と passive cooldown は実装済み。能動 health poll / queue は未実装 | まず router に health state を持たせ、Ollama `/api/tags` probe を HTTP server 起動時だけ有効化。queue はさらに後続 | [active-health-queue.md](docs/design/active-health-queue.md) |
+
+判断目安:
+
+- **Agent-Lab から明示的に Thug-Fugu を呼ぶ用途**では、上記 3 件は必須ではありません。まず実運用で feedback を貯めるのが推奨です。
+- **OpenAI 互換 HTTP API を他クライアントへ広げる**なら、HTTP server-side tool execution と true token streaming の優先度が上がります。
+- **複数 endpoint / 複数マシンで常時運用する**なら、active health polling / queue の優先度が上がります。
+
 ## セキュリティ注意
 
 - デフォルトの HTTP bind は `127.0.0.1` を推奨します。
