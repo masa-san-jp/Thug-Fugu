@@ -60,6 +60,9 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if self.path == "/v1/models":
+            self._write_json(200, _models_response(self.server.orchestrator.config))
+            return
         self._write_json(404, {"error": {"message": "not found"}})
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib API
@@ -459,3 +462,24 @@ def _usage_to_openai_dict(usage: Optional[TokenUsage]) -> Dict[str, int]:
         "completion_tokens": completion,
         "total_tokens": total,
     }
+
+
+def _models_response(config: FuguLocalConfig) -> Dict[str, Any]:
+    ids = ["fugu-local"]
+    ids.extend(model.name for model in config.models)
+    ids.extend(pool.name for pool in config.model_pools)
+    seen = set()
+    data = []
+    for model_id in ids:
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        data.append(
+            {
+                "id": model_id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "thug-fugu",
+            }
+        )
+    return {"object": "list", "data": data}
