@@ -365,6 +365,7 @@ logging.getLogger("fugu_local.orchestrator").setLevel(logging.INFO)  # 既定の
 - **新しい selection_policy**：`orchestrator._select_worker_roles` に分岐を追加し、`config.SUPPORTED_SELECTION_POLICIES` に登録。
 - **ロール追加**：config の `roles[]` に足すだけ（コード変更不要）。
 - **複数GPU/複数マシン分散**：単一ホストの複数GPUは [docs/operations/multi-gpu-role-assignment.md](docs/operations/multi-gpu-role-assignment.md)、複数ノードは [docs/design/distributed-inference.md](docs/design/distributed-inference.md) を参照（`models[].base_url` を各 endpoint へ向ける静的分散は追加実装なしで可能）。
+- **未実装大物の設計**：HTTP server-side tool execution は [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md)、真の token streaming は [true-token-streaming.md](docs/design/true-token-streaming.md)、能動 health polling / queue は [active-health-queue.md](docs/design/active-health-queue.md) を参照。
 
 ---
 
