@@ -69,6 +69,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["roles"], ["planner"])
         self.assertEqual(body["max_concurrent_requests"], 4)
 
+    def test_models_endpoint(self):
+        with urllib.request.urlopen(f"{self.base_url}/v1/models", timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(body["object"], "list")
+        ids = [model["id"] for model in body["data"]]
+        self.assertIn("fugu-local", ids)
+        self.assertIn("m", ids)
+        self.assertEqual(body["data"][0]["object"], "model")
+
     def test_chat_completions(self):
         status, body = self._post_chat(
             {

@@ -8,6 +8,7 @@ Endpoint:
 
 ```text
 POST /v1/chat/completions
+GET  /v1/models
 ```
 
 ## Supported request fields
@@ -46,6 +47,8 @@ The server returns:
 
 `usage` is aggregated from backend-reported counts when available. Backends that do not report usage still produce OpenAI-compatible integer placeholders (`0/0/0`), which should be treated as unknown rather than measured zero.
 
+`GET /v1/models` returns a minimal model list containing `fugu-local` plus configured `models[].name` and `model_pools[].name`. Chat requests may still use any `model` string; routing is controlled by the Thug-Fugu config.
+
 ## Error behavior
 
 Errors use a minimal JSON shape:
@@ -75,7 +78,6 @@ The current minimal API does not attempt full OpenAI compatibility. In particula
 - Tool calling is shape-only: schemas are validated when enabled, but tools are not forwarded to backends or executed yet (see `docs/design/tool-calling-support.md`)
 - No function calling
 - No multimodal message content
-- No `/v1/models` endpoint
 - No token estimation when a backend omits usage
 
 ## Compatibility principle
