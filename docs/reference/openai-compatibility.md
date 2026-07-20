@@ -2,7 +2,7 @@
 
 ## Status
 
-Thug-Fugu implements a minimal subset of the OpenAI Chat Completions API for local tooling compatibility, including buffered SSE for `stream: true`.
+Thug-Fugu implements a minimal subset of the OpenAI Chat Completions API for local tooling compatibility, including true backend-delta SSE for eligible direct requests and buffered SSE fallback for complex orchestration.
 
 Endpoint:
 
@@ -19,7 +19,7 @@ GET  /v1/models
 | `messages` | Supported | Must be a list of objects with string `role` and string `content`. |
 | `temperature` | Supported | Optional. Passed through to backend requests. |
 | `max_tokens` | Supported | Optional. Passed as `max_tokens` for OpenAI-compatible backends and `num_predict` for Ollama. |
-| `stream` | Partial | `false`/omitted returns JSON. `true` returns OpenAI-style SSE, but currently streams the already-completed final answer as buffered chunks rather than backend token deltas. |
+| `stream` | Partial | `false`/omitted returns JSON. `true` returns OpenAI-style SSE. Eligible `direct` requests stream backend deltas incrementally; complex orchestration uses buffered fallback. |
 | `stream_options.include_usage` | Partial | When `stream=true` and `include_usage=true`, emits a final usage chunk before `[DONE]`. Usage is backend-reported/aggregated when known, otherwise `0/0/0`. |
 | `tools` | Shape-only | Rejected with 400 unless `tool_calling.enabled=true`. When enabled, tool schemas are validated and accepted, but tools are not yet forwarded to backends or executed. See `docs/design/tool-calling-support.md`. |
 | `tool_choice` | Partial | `none`/`auto` accepted when tool calling is enabled. `required` and named function choice return 400 (not supported in shape-only mode). |
@@ -75,7 +75,8 @@ Typical status codes:
 
 The current minimal API does not attempt full OpenAI compatibility. In particular:
 
-- `stream: true` is buffered SSE: worker fan-out and synthesizer still run to completion before the server emits SSE chunks. `stream_options.include_usage=true` can include final aggregated usage, but this is still emitted after generation completes.
+- `stream: true` uses true incremental backend deltas when coordinator selects `direct`, verifier and request deadline are disabled, and every selected router member supports `stream_chat`. Ollama and OpenAI-compatible adapters support this path.
+- `role_split`, `parallel_ensemble`, verifier-enabled requests, request-deadline requests, and unsupported/mixed model pools retain buffered SSE. `stream_options.include_usage=true` emits the final available usage chunk in both paths.
 - Backend-generated tool calling is not supported yet: tool schemas are validated, and explicit request `tool_calls` can execute locally, but tools are not forwarded to backends for automatic tool-call generation (see `docs/design/tool-calling-support.md`)
 - No function calling
 - No multimodal message content

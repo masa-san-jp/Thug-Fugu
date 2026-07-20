@@ -1,6 +1,6 @@
 import unittest
 
-from fugu_local.backends import ChatMessage, ChatRequest, ChatResponse
+from fugu_local.backends import ChatMessage, ChatRequest, ChatResponse, ChatStreamChunk
 from fugu_local.config import config_from_dict
 from fugu_local.orchestrator import FuguLocalOrchestrator
 from fugu_local.routing import ModelRouter, RouterMember
@@ -17,6 +17,23 @@ class RecordingBackend:
         if self.fail:
             raise RuntimeError(f"backend {self.content} down")
         return ChatResponse(content=self.content)
+
+
+class StreamingRecordingBackend(RecordingBackend):
+    def __init__(self, content, *, fail_before=False, fail_after=False):
+        super().__init__(content)
+        self.fail_before = fail_before
+        self.fail_after = fail_after
+        self.stream_calls = 0
+
+    def stream_chat(self, request):
+        self.stream_calls += 1
+        if self.fail_before:
+            raise RuntimeError(f"backend {self.content} stream down")
+        yield ChatStreamChunk(delta=self.content)
+        if self.fail_after:
+            raise RuntimeError(f"backend {self.content} stream interrupted")
+        yield ChatStreamChunk(finish_reason="stop")
 
 
 def _request():
@@ -54,6 +71,48 @@ class ModelRouterTests(unittest.TestCase):
         third = router.chat(_request()).content
 
         self.assertEqual([first, second, third], ["a", "b", "a"])
+
+    def test_streaming_requires_every_member_to_support_it(self):
+        router = ModelRouter(
+            "m",
+            [
+                RouterMember("streaming", StreamingRecordingBackend("a")),
+                RouterMember("buffered", RecordingBackend("b")),
+            ],
+        )
+
+        self.assertFalse(router.supports_streaming)
+        with self.assertRaises(RuntimeError):
+            list(router.stream_chat(_request()))
+
+    def test_streaming_fails_over_before_first_chunk(self):
+        down = StreamingRecordingBackend("down", fail_before=True)
+        up = StreamingRecordingBackend("up")
+        router = ModelRouter(
+            "m",
+            [RouterMember("down", down), RouterMember("up", up)],
+        )
+
+        chunks = list(router.stream_chat(_request()))
+
+        self.assertEqual([chunk.delta for chunk in chunks if chunk.delta], ["up"])
+        self.assertEqual(down.stream_calls, 1)
+        self.assertEqual(up.stream_calls, 1)
+
+    def test_streaming_does_not_fail_over_after_first_chunk(self):
+        interrupted = StreamingRecordingBackend("partial", fail_after=True)
+        backup = StreamingRecordingBackend("backup")
+        router = ModelRouter(
+            "m",
+            [RouterMember("partial", interrupted), RouterMember("backup", backup)],
+        )
+        stream = router.stream_chat(_request())
+
+        self.assertEqual(next(stream).delta, "partial")
+        with self.assertRaises(RuntimeError):
+            list(stream)
+
+        self.assertEqual(backup.stream_calls, 0)
 
     def test_active_health_state_transitions_respect_thresholds(self):
         router = ModelRouter(

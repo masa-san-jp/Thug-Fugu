@@ -9,9 +9,9 @@ import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
-from .backends import ChatMessage, TokenUsage
+from .backends import ChatMessage, ChatStreamChunk, TokenUsage
 from .config import FuguLocalConfig
 from .orchestrator import FuguLocalOrchestrator, OrchestrationError, messages_from_dicts
 from .tools import ToolExecutionError, ToolResult, execute_tool_calls, parse_tool_calls
@@ -133,11 +133,57 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                 messages.append(
                     ChatMessage(role="user", content=_format_tool_results(tool_results))
                 )
+
+            model = body.get("model") or "fugu-local"
+            temperature = _optional_temperature(body.get("temperature"))
+            max_tokens = _optional_max_tokens(body.get("max_tokens"))
+            if body.get("stream") is True:
+                direct_stream = self.server.orchestrator.stream_direct_if_available(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                if direct_stream is not None:
+                    try:
+                        first_chunk = next(direct_stream)
+                    except StopIteration:
+                        direct_stream = None
+                    except Exception as exc:
+                        raise OrchestrationError(
+                            "streaming backend failed before response"
+                        ) from exc
+                    if direct_stream is not None:
+                        self._write_direct_chat_completion_stream(
+                            model=model,
+                            first_chunk=first_chunk,
+                            remaining_chunks=direct_stream,
+                            include_usage=_stream_include_usage(body),
+                        )
+                        return
+
             result = self.server.orchestrator.chat(
                 messages,
-                temperature=_optional_temperature(body.get("temperature")),
-                max_tokens=_optional_max_tokens(body.get("max_tokens")),
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
+
+            if body.get("stream") is True:
+                self._write_chat_completion_stream(
+                    model=model,
+                    content=result.content,
+                    usage=result.usage,
+                    include_usage=_stream_include_usage(body),
+                )
+            else:
+                self._write_json(
+                    200,
+                    _chat_completion_response(
+                        model=model,
+                        content=result.content,
+                        usage=result.usage,
+                        thug_fugu=_thug_fugu_metadata(tool_results),
+                    ),
+                )
         except RequestTooLargeError as exc:
             self._write_json(413, {"error": {"message": str(exc)}})
             return
@@ -155,25 +201,6 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
             return
         finally:
             self.server.release_request_slot()
-
-        model = body.get("model") or "fugu-local"
-        if body.get("stream") is True:
-            self._write_chat_completion_stream(
-                model=model,
-                content=result.content,
-                usage=result.usage,
-                include_usage=_stream_include_usage(body),
-            )
-        else:
-            self._write_json(
-                200,
-                _chat_completion_response(
-                    model=model,
-                    content=result.content,
-                    usage=result.usage,
-                    thug_fugu=_thug_fugu_metadata(tool_results),
-                ),
-            )
 
     def log_message(self, format: str, *args: Any) -> None:
         # Keep the default server quiet when embedded in development tooling.
@@ -234,6 +261,99 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
             include_usage=include_usage,
         ):
             self.wfile.write(event)
+        self.wfile.flush()
+
+    def _write_direct_chat_completion_stream(
+        self,
+        *,
+        model: str,
+        first_chunk: ChatStreamChunk,
+        remaining_chunks: Iterable[ChatStreamChunk],
+        include_usage: bool,
+    ) -> None:
+        created = int(time.time())
+        completion_id = f"chatcmpl-local-{created}"
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("cache-control", "no-cache")
+        self.end_headers()
+
+        usage: Optional[TokenUsage] = None
+        finish_emitted = False
+        try:
+            self._write_sse_chunk(
+                _chat_completion_chunk(
+                    completion_id=completion_id,
+                    created=created,
+                    model=model,
+                    delta={"role": "assistant"},
+                    finish_reason=None,
+                )
+            )
+            for chunk in _prepend_chunk(first_chunk, remaining_chunks):
+                if chunk.usage is not None:
+                    usage = chunk.usage
+                if chunk.delta:
+                    self._write_sse_chunk(
+                        _chat_completion_chunk(
+                            completion_id=completion_id,
+                            created=created,
+                            model=model,
+                            delta={"content": chunk.delta},
+                            finish_reason=None,
+                        )
+                    )
+                if chunk.finish_reason is not None and not finish_emitted:
+                    self._write_sse_chunk(
+                        _chat_completion_chunk(
+                            completion_id=completion_id,
+                            created=created,
+                            model=model,
+                            delta={},
+                            finish_reason=chunk.finish_reason,
+                        )
+                    )
+                    finish_emitted = True
+
+            if not finish_emitted:
+                self._write_sse_chunk(
+                    _chat_completion_chunk(
+                        completion_id=completion_id,
+                        created=created,
+                        model=model,
+                        delta={},
+                        finish_reason="stop",
+                    )
+                )
+            if include_usage:
+                self._write_sse_chunk(
+                    _chat_completion_chunk(
+                        completion_id=completion_id,
+                        created=created,
+                        model=model,
+                        delta={},
+                        finish_reason=None,
+                        usage=usage,
+                        choices=[],
+                    )
+                )
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception:  # noqa: BLE001 - headers already sent; emit only a safe error.
+            try:
+                self.wfile.write(b'data: {"error":{"message":"streaming backend error"}}\n\n')
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+        try:
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def _write_sse_chunk(self, payload: Dict[str, Any]) -> None:
+        event = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+        self.wfile.write(event)
         self.wfile.flush()
 
 
@@ -513,6 +633,14 @@ def _chat_completion_stream_events(
     ]
     events.append(b"data: [DONE]\n\n")
     return events
+
+
+def _prepend_chunk(
+    first: ChatStreamChunk,
+    remaining: Iterable[ChatStreamChunk],
+) -> Iterable[ChatStreamChunk]:
+    yield first
+    yield from remaining
 
 
 def _chat_completion_chunk(

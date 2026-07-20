@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from unittest import mock
 
-from fugu_local.backends import ChatResponse, TokenUsage
+from fugu_local.backends import ChatResponse, ChatStreamChunk, TokenUsage
 from fugu_local.config import config_from_dict
 from fugu_local.orchestrator import FuguLocalOrchestrator
 from fugu_local.server import (
@@ -38,6 +38,38 @@ class UsageBackend:
             content="usage response",
             usage=TokenUsage(prompt_tokens=13, completion_tokens=17, total_tokens=30),
         )
+
+
+class ControlledStreamingBackend:
+    def __init__(self, *, fail_before=False, fail_after=False):
+        self.fail_before = fail_before
+        self.fail_after = fail_after
+        self.first_yielded = threading.Event()
+        self.release = threading.Event()
+        self.completed = threading.Event()
+        self.stream_calls = 0
+        self.chat_calls = 0
+
+    def chat(self, request):
+        self.chat_calls += 1
+        return ChatResponse(content="buffered fallback")
+
+    def stream_chat(self, request):
+        self.stream_calls += 1
+        if self.fail_before:
+            raise RuntimeError("SECRET_PRE_HEADER_STREAM_ERROR")
+        self.first_yielded.set()
+        yield ChatStreamChunk(delta="first")
+        if self.fail_after:
+            raise RuntimeError("SECRET_POST_HEADER_STREAM_ERROR")
+        if not self.release.wait(timeout=5):
+            raise RuntimeError("stream release timeout")
+        yield ChatStreamChunk(delta=" second")
+        yield ChatStreamChunk(
+            finish_reason="stop",
+            usage=TokenUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5),
+        )
+        self.completed.set()
 
 
 class LifecycleMonitor:
@@ -77,6 +109,29 @@ class ServerTests(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
         self.server.server_close()
+
+    def _start_direct_stream_server(self, backend):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [
+                    {
+                        "name": "planner",
+                        "model": "m",
+                        "system_prompt": "answer directly",
+                    }
+                ],
+                "coordinator": {"enabled": True, "default_pattern": "direct"},
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            FuguLocalOrchestrator(config, backend_overrides={"m": backend}),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_port}"
 
     def test_health(self):
         with urllib.request.urlopen(f"{self.base_url}/health", timeout=5) as response:
@@ -291,6 +346,136 @@ class ServerTests(unittest.TestCase):
             usage_chunk["usage"],
             {"prompt_tokens": 13, "completion_tokens": 17, "total_tokens": 30},
         )
+
+    def test_direct_stream_emits_content_before_backend_completes(self):
+        backend = ControlledStreamingBackend()
+        server, thread, _ = self._start_direct_stream_server(backend)
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        payload = json.dumps(
+            {
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
+        )
+        try:
+            connection.request(
+                "POST",
+                "/v1/chat/completions",
+                body=payload,
+                headers={"content-type": "application/json"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn("text/event-stream", response.getheader("content-type"))
+
+            initial = ""
+            while '"content": "first"' not in initial:
+                line = response.readline().decode("utf-8")
+                self.assertTrue(line)
+                initial += line
+
+            self.assertTrue(backend.first_yielded.is_set())
+            self.assertFalse(backend.completed.is_set())
+            self.assertEqual(backend.chat_calls, 0)
+
+            backend.release.set()
+            raw = initial + response.read().decode("utf-8")
+        finally:
+            backend.release.set()
+            connection.close()
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        events = _parse_sse_events(raw)
+        self.assertEqual(events[-1], "[DONE]")
+        chunks = [json.loads(event) for event in events[:-1]]
+        content = "".join(
+            choice["delta"].get("content", "") for chunk in chunks for choice in chunk["choices"]
+        )
+        self.assertEqual(content, "first second")
+        self.assertEqual(chunks[-1]["choices"], [])
+        self.assertEqual(chunks[-1]["usage"]["total_tokens"], 5)
+        self.assertTrue(backend.completed.is_set())
+
+    def test_direct_stream_failure_before_headers_returns_json(self):
+        backend = ControlledStreamingBackend(fail_before=True)
+        server, thread, base_url = self._start_direct_stream_server(backend)
+        try:
+            status, body = self._post_chat_to(
+                base_url,
+                {
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": True,
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        self.assertEqual(status, 502)
+        self.assertIn("streaming backend failed", body["error"]["message"])
+        self.assertNotIn("SECRET", body["error"]["message"])
+
+    def test_direct_stream_failure_after_headers_emits_safe_terminal_error(self):
+        backend = ControlledStreamingBackend(fail_after=True)
+        server, thread, base_url = self._start_direct_stream_server(backend)
+        try:
+            status, headers, raw = self._post_chat_raw_to(
+                base_url,
+                {
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": True,
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        text = raw.decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", headers["content-type"])
+        self.assertIn('"content": "first"', text)
+        self.assertIn("streaming backend error", text)
+        self.assertIn("[DONE]", text)
+        self.assertNotIn("SECRET_POST_HEADER_STREAM_ERROR", text)
+
+    def test_role_split_streaming_uses_buffered_fallback(self):
+        backend = ControlledStreamingBackend()
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            FuguLocalOrchestrator(config, backend_overrides={"m": backend}),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, headers, raw = self._post_chat_raw_to(
+                f"http://127.0.0.1:{server.server_port}",
+                {
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": True,
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", headers["content-type"])
+        self.assertIn("buffered fallback", raw.decode("utf-8"))
+        self.assertEqual(backend.chat_calls, 1)
+        self.assertEqual(backend.stream_calls, 0)
 
     def test_rejects_non_boolean_stream(self):
         status, body = self._post_chat(

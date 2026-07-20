@@ -16,9 +16,9 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
-from .backends import ChatRequest, ChatResponse, LLMBackend
+from .backends import ChatRequest, ChatResponse, ChatStreamChunk, LLMBackend
 
 
 class RoutingError(RuntimeError):
@@ -94,6 +94,12 @@ class ModelRouter:
     def members(self) -> List[RouterMember]:
         return list(self._members)
 
+    @property
+    def supports_streaming(self) -> bool:
+        return all(
+            callable(getattr(member.backend, "stream_chat", None)) for member in self._members
+        )
+
     def health_snapshot(self) -> List[dict]:
         """Return non-sensitive passive and active health state for observability."""
 
@@ -168,6 +174,35 @@ class ModelRouter:
             finally:
                 self._release(member)
         assert last_exc is not None  # order is non-empty, so a failure must have occurred.
+        raise last_exc
+
+    def stream_chat(self, request: ChatRequest) -> Iterator[ChatStreamChunk]:
+        """Stream from one member, failing over only before the first emitted chunk."""
+
+        if not self.supports_streaming:
+            raise RoutingError("not every router member supports streaming")
+
+        order = self._attempt_order()
+        last_exc: Optional[Exception] = None
+        for member in order:
+            self._acquire(member)
+            emitted = False
+            try:
+                stream_chat = getattr(member.backend, "stream_chat")
+                for chunk in stream_chat(request):
+                    emitted = True
+                    yield chunk
+                self._record_success(member)
+                return
+            except Exception as exc:  # noqa: BLE001 - fail over before streaming starts.
+                last_exc = exc
+                self._record_failure(member)
+                if emitted:
+                    raise
+            finally:
+                self._release(member)
+
+        assert last_exc is not None
         raise last_exc
 
     def _attempt_order(self) -> List[RouterMember]:

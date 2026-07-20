@@ -236,6 +236,91 @@ class UsageParsingTests(unittest.TestCase):
         self.assertEqual(response.usage.total_tokens, 18)
 
 
+class StreamingBackendTests(unittest.TestCase):
+    def test_ollama_stream_maps_deltas_finish_and_usage(self):
+        backend = OllamaBackend(
+            ModelConfig(
+                name="local",
+                backend="ollama",
+                model="mock",
+                base_url="http://localhost:11434",
+            )
+        )
+        response = StreamResponse(
+            [
+                {"message": {"content": "hel"}, "done": False},
+                {"message": {"content": "lo"}, "done": False},
+                {
+                    "message": {"content": ""},
+                    "done": True,
+                    "prompt_eval_count": 3,
+                    "eval_count": 2,
+                },
+            ]
+        )
+
+        with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+            chunks = list(
+                backend.stream_chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
+            )
+
+        self.assertEqual([chunk.delta for chunk in chunks], ["hel", "lo", ""])
+        self.assertEqual(chunks[-1].finish_reason, "stop")
+        self.assertEqual(chunks[-1].usage.total_tokens, 5)
+        request = urlopen.call_args.args[0]
+        self.assertTrue(json.loads(request.data)["stream"])
+
+    def test_openai_stream_parses_sse_done_and_usage(self):
+        backend = OpenAICompatibleBackend(
+            ModelConfig(
+                name="local",
+                backend="openai-compatible",
+                model="mock",
+                base_url="http://localhost:1234",
+            )
+        )
+        response = RawStreamResponse(
+            [
+                b'data: {"choices":[{"delta":{"content":"hel"},"finish_reason":null}]}\n',
+                b"\n",
+                b'data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}\n',
+                b'data: {"choices":[],"usage":{"prompt_tokens":3,'
+                b'"completion_tokens":2,"total_tokens":5}}\n',
+                b"data: [DONE]\n",
+            ]
+        )
+
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            chunks = list(
+                backend.stream_chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
+            )
+
+        self.assertEqual("".join(chunk.delta for chunk in chunks), "hello")
+        self.assertEqual(chunks[1].finish_reason, "stop")
+        self.assertEqual(chunks[-1].usage.total_tokens, 5)
+
+    def test_openai_stream_rejects_invalid_sse_json(self):
+        backend = OpenAICompatibleBackend(
+            ModelConfig(
+                name="local",
+                backend="openai-compatible",
+                model="mock",
+                base_url="http://localhost:1234",
+            )
+        )
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            return_value=RawStreamResponse([b"data: {not-json}\n"]),
+        ):
+            with self.assertRaises(BackendError):
+                list(
+                    backend.stream_chat(
+                        ChatRequest(model="mock", messages=[ChatMessage("user", "hi")])
+                    )
+                )
+
+
 class JsonResponse:
     def __init__(self, payload):
         self.payload = payload
@@ -248,6 +333,25 @@ class JsonResponse:
 
     def read(self):
         return json.dumps(self.payload).encode("utf-8")
+
+
+class RawStreamResponse:
+    def __init__(self, lines):
+        self.lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        return iter(self.lines)
+
+
+class StreamResponse(RawStreamResponse):
+    def __init__(self, payloads):
+        super().__init__([f"{json.dumps(payload)}\n".encode("utf-8") for payload in payloads])
 
 
 if __name__ == "__main__":
