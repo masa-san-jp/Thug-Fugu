@@ -120,6 +120,18 @@ class ToolCallingConfig:
 
 
 @dataclass(frozen=True)
+class RequestQueueConfig:
+    enabled: bool = False
+    max_size: int = 16
+    timeout_seconds: float = 30.0
+
+
+@dataclass(frozen=True)
+class ServerConfig:
+    queue: RequestQueueConfig = field(default_factory=RequestQueueConfig)
+
+
+@dataclass(frozen=True)
 class FuguLocalConfig:
     models: List[ModelConfig]
     roles: List[RoleConfig]
@@ -127,6 +139,7 @@ class FuguLocalConfig:
     coordinator: CoordinatorConfig = field(default_factory=CoordinatorConfig)
     tool_calling: ToolCallingConfig = field(default_factory=ToolCallingConfig)
     model_pools: List[ModelPoolConfig] = field(default_factory=list)
+    server: ServerConfig = field(default_factory=ServerConfig)
 
     def model_by_name(self) -> Dict[str, ModelConfig]:
         return {model.name: model for model in self.models}
@@ -162,6 +175,7 @@ def config_from_dict(raw: Mapping[str, Any]) -> FuguLocalConfig:
     coordinator = _coordinator_from_dict(raw.get("coordinator", {}))
     tool_calling = _tool_calling_from_dict(raw.get("tool_calling", {}))
     model_pools = [_model_pool_from_dict(item) for item in _optional_list(raw, "model_pools")]
+    server = _server_from_dict(raw.get("server", {}))
     config = FuguLocalConfig(
         models=models,
         roles=roles,
@@ -169,6 +183,7 @@ def config_from_dict(raw: Mapping[str, Any]) -> FuguLocalConfig:
         coordinator=coordinator,
         tool_calling=tool_calling,
         model_pools=model_pools,
+        server=server,
     )
     validate_config(config)
     return config
@@ -224,6 +239,7 @@ def validate_config(config: FuguLocalConfig) -> None:
 
     _validate_coordinator(config, model_names)
     _validate_tool_calling(config.tool_calling)
+    _validate_server(config.server)
 
 
 def _model_from_dict(raw: Any) -> ModelConfig:
@@ -404,6 +420,27 @@ def _validate_tool_calling(config: ToolCallingConfig) -> None:
                 "tool_calling.allowed_tools entries must match ^[A-Za-z0-9_-]{1,64}$; "
                 f"invalid entry: {tool!r}"
             )
+
+
+def _server_from_dict(raw: Any) -> ServerConfig:
+    obj = _required_object(raw, "server")
+    queue_obj = _required_object(obj.get("queue", {}), "server.queue")
+    max_size = _optional_int(queue_obj, "max_size", default=16)
+    assert max_size is not None
+    return ServerConfig(
+        queue=RequestQueueConfig(
+            enabled=_optional_bool(queue_obj, "enabled", default=False),
+            max_size=max_size,
+            timeout_seconds=_optional_number(queue_obj, "timeout_seconds", default=30.0),
+        )
+    )
+
+
+def _validate_server(config: ServerConfig) -> None:
+    if config.queue.max_size <= 0:
+        raise ConfigError("server.queue.max_size must be positive")
+    if config.queue.timeout_seconds <= 0:
+        raise ConfigError("server.queue.timeout_seconds must be positive")
 
 
 def _health_check_from_dict(raw: Any) -> HealthCheckConfig:

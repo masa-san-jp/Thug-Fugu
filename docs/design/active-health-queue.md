@@ -21,7 +21,7 @@ Status:
 - policies: `round_robin`, `least_busy`
 - failed endpoint can be passively deprioritized with `cooldown_seconds`
 - optional Ollama `/api/tags` background health polling
-- no queue beyond immediate HTTP concurrency limit
+- optional bounded HTTP request queue (`server.queue`)
 
 ## 3. Goals
 
@@ -214,6 +214,9 @@ and joins the monitor. One-shot CLI runs do not start it.
 - Add server queue config
 - Add queue wait path before returning 429
 - Add concurrency tests
+
+Status: implemented. `server.queue` adds a bounded wait before returning 429.
+Disabled by default. `/health` reports queue size and limits.
 
 ### Phase 4: OpenAI-compatible probes
 

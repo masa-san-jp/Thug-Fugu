@@ -2,6 +2,7 @@ import http.client
 import io
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -85,6 +86,15 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["roles"], ["planner"])
         self.assertEqual(body["max_concurrent_requests"], 4)
         self.assertEqual(body["model_pools"], {})
+        self.assertEqual(
+            body["queue"],
+            {
+                "enabled": False,
+                "size": 0,
+                "max_size": 16,
+                "timeout_seconds": 30.0,
+            },
+        )
 
     def test_health_reports_active_pool_state_without_credentials(self):
         endpoint = "http://user:secret@127.0.0.1:11434?token=secret"
@@ -521,6 +531,120 @@ class ServerTests(unittest.TestCase):
             server.server_close()
 
         self.assertEqual(first_result["response"][0], 200)
+
+    def test_queue_waits_for_slot_is_bounded_and_reports_size(self):
+        backend = BlockingBackend()
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+                "server": {
+                    "queue": {
+                        "enabled": True,
+                        "max_size": 1,
+                        "timeout_seconds": 2,
+                    }
+                },
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            FuguLocalOrchestrator(config, backend_overrides={"m": backend}),
+            max_concurrent_requests=1,
+        )
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        first_result = {}
+        second_result = {}
+
+        first_thread = threading.Thread(
+            target=lambda: first_result.setdefault("response", self._post_chat_to(base_url)),
+            daemon=True,
+        )
+        first_thread.start()
+        self.assertTrue(backend.started.wait(timeout=5))
+
+        second_thread = threading.Thread(
+            target=lambda: second_result.setdefault("response", self._post_chat_to(base_url)),
+            daemon=True,
+        )
+        second_thread.start()
+
+        try:
+            deadline = time.monotonic() + 2
+            queue_size = 0
+            while time.monotonic() < deadline:
+                with urllib.request.urlopen(f"{base_url}/health", timeout=5) as response:
+                    health = json.loads(response.read().decode("utf-8"))
+                queue_size = health["queue"]["size"]
+                if queue_size == 1:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(queue_size, 1)
+
+            status, body = self._post_chat_to(base_url)
+            self.assertEqual(status, 429)
+            self.assertIn("too many", body["error"]["message"])
+
+            backend.release.set()
+            first_thread.join(timeout=5)
+            second_thread.join(timeout=5)
+        finally:
+            backend.release.set()
+            server.shutdown()
+            server_thread.join(timeout=2)
+            server.server_close()
+
+        self.assertEqual(first_result["response"][0], 200)
+        self.assertEqual(second_result["response"][0], 200)
+
+    def test_queue_timeout_returns_429_and_removes_waiter(self):
+        backend = BlockingBackend()
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+                "server": {
+                    "queue": {
+                        "enabled": True,
+                        "max_size": 1,
+                        "timeout_seconds": 0.05,
+                    }
+                },
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            FuguLocalOrchestrator(config, backend_overrides={"m": backend}),
+            max_concurrent_requests=1,
+        )
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        first_thread = threading.Thread(
+            target=lambda: self._post_chat_to(base_url),
+            daemon=True,
+        )
+        first_thread.start()
+        self.assertTrue(backend.started.wait(timeout=5))
+
+        try:
+            status, body = self._post_chat_to(base_url)
+            self.assertEqual(status, 429)
+            self.assertIn("too many", body["error"]["message"])
+
+            with urllib.request.urlopen(f"{base_url}/health", timeout=5) as response:
+                health = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(health["queue"]["size"], 0)
+        finally:
+            backend.release.set()
+            first_thread.join(timeout=5)
+            server.shutdown()
+            server_thread.join(timeout=2)
+            server.server_close()
 
     def _post_chat(self, payload):
         return self._post_chat_to(self.base_url, payload)
