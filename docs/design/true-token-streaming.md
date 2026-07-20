@@ -12,9 +12,14 @@ but does not improve perceived latency.
 ## 2. Current state
 
 - `stream=true` returns OpenAI-style SSE.
-- Generation is complete before SSE starts.
+- `direct` pattern streams backend deltas incrementally when every router member
+  supports streaming.
+- `role_split`, `parallel_ensemble`, verifier-enabled requests, request-deadline
+  requests, and unsupported backends use buffered SSE fallback.
 - `stream_options.include_usage=true` can emit a final usage chunk.
-- Backend adapters use non-streaming HTTP calls.
+- Ollama, OpenAI-compatible, and echo adapters implement `stream_chat`.
+
+Status: Phase 1 is implemented.
 
 ## 3. Goals
 
@@ -62,6 +67,11 @@ Fallback to buffered SSE when:
 - verifier enabled
 - synthesizer is needed
 - backend does not support streaming
+
+Status: implemented. The server primes the first backend chunk before sending
+SSE headers so early backend failures remain normal JSON 502 responses. Errors
+after headers emit a redacted terminal SSE error and `[DONE]`. Router failover
+is allowed only before the first emitted chunk.
 
 ### Phase 2: stream synthesizer output
 
@@ -167,4 +177,3 @@ This preserves compatibility and keeps implementation risk low.
   time-to-first-token.
 - Existing buffered behavior remains for complex orchestration.
 - CI covers streaming and fallback paths.
-

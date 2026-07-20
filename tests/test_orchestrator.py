@@ -1,6 +1,6 @@
 import unittest
 
-from fugu_local.backends import ChatMessage, ChatResponse, TokenUsage
+from fugu_local.backends import ChatMessage, ChatResponse, ChatStreamChunk, TokenUsage
 from fugu_local.config import config_from_dict
 from fugu_local.orchestrator import FuguLocalOrchestrator, OrchestrationError
 
@@ -14,6 +14,18 @@ class StaticBackend:
     def chat(self, request):
         self.calls.append(request)
         return ChatResponse(content=self.content, usage=self.usage)
+
+
+class StreamingStaticBackend(StaticBackend):
+    def __init__(self, content, usage=None):
+        super().__init__(content, usage=usage)
+        self.stream_calls = []
+
+    def stream_chat(self, request):
+        self.stream_calls.append(request)
+        yield ChatStreamChunk(delta=self.content[:3])
+        yield ChatStreamChunk(delta=self.content[3:])
+        yield ChatStreamChunk(finish_reason="stop", usage=self.usage)
 
 
 class FailingBackend:
@@ -525,6 +537,48 @@ class CoordinatorDispatchTests(unittest.TestCase):
         self.assertEqual(len(planner.calls), 1)
         self.assertEqual(len(synth.calls), 0)
         self.assertIsNone(result.synthesizer_role)
+
+    def test_direct_pattern_exposes_backend_stream_when_supported(self):
+        config = make_coordinator_config({"enabled": True, "default_pattern": "direct"})
+        planner = StreamingStaticBackend(
+            "streamed output",
+            usage=TokenUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5),
+        )
+        orchestrator = FuguLocalOrchestrator(
+            config,
+            backend_overrides={
+                "planner-model": planner,
+                "synth-model": StaticBackend("unused"),
+            },
+        )
+
+        stream = orchestrator.stream_direct_if_available(
+            [ChatMessage(role="user", content="short question")]
+        )
+
+        self.assertIsNotNone(stream)
+        chunks = list(stream)
+        self.assertEqual("".join(chunk.delta for chunk in chunks), "streamed output")
+        self.assertEqual(chunks[-1].usage.total_tokens, 5)
+        self.assertEqual(planner.stream_calls[0].messages[0].role, "system")
+
+    def test_role_split_does_not_expose_direct_stream(self):
+        planner = StreamingStaticBackend("streamed output")
+        orchestrator = FuguLocalOrchestrator(
+            make_config(selection_policy="all"),
+            backend_overrides={
+                "planner-model": planner,
+                "coder-model": StaticBackend("coder"),
+                "synth-model": StaticBackend("synth"),
+            },
+        )
+
+        stream = orchestrator.stream_direct_if_available(
+            [ChatMessage(role="user", content="short question")]
+        )
+
+        self.assertIsNone(stream)
+        self.assertEqual(planner.stream_calls, [])
 
     def test_parallel_ensemble_majority_vote(self):
         config = make_coordinator_config(

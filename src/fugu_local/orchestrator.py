@@ -8,11 +8,12 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, Iterator, List, Optional
 
 from .backends import (
     ChatMessage,
     ChatRequest,
+    ChatStreamChunk,
     LLMBackend,
     TokenUsage,
     build_backend,
@@ -264,6 +265,44 @@ class FuguLocalOrchestrator:
         )
         self._log_run(result)
         return result
+
+    def stream_direct_if_available(
+        self,
+        messages: List[ChatMessage],
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Optional[Iterator[ChatStreamChunk]]:
+        """Return a direct backend stream when the current request is eligible."""
+
+        if not messages:
+            raise OrchestrationError("At least one message is required")
+        if self.config.orchestrator.request_timeout_seconds is not None:
+            return None
+        if self.config.coordinator.verify.enabled:
+            return None
+
+        user_text = _latest_user_message_text(messages)
+        plan = self._coordinator.plan(user_text) if self._coordinator else None
+        pattern = plan.pattern if plan else "role_split"
+        if pattern != "direct":
+            return None
+
+        selected = self._select_worker_roles(self._worker_roles(), user_text)
+        if not selected:
+            raise OrchestrationError("No worker roles are configured")
+        role = selected[0]
+        router = self._router_for_role(role)
+        if not router.supports_streaming:
+            return None
+
+        request = self._build_role_request(
+            role,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return router.stream_chat(request)
 
     def _run_role_split(
         self,

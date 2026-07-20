@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional, Protocol
+from typing import Dict, Iterator, List, Mapping, Optional, Protocol
 
 from .config import ModelConfig
 
@@ -37,6 +37,15 @@ class ChatRequest:
 class ChatResponse:
     content: str
     raw: Optional[Mapping] = None
+    usage: Optional["TokenUsage"] = None
+
+
+@dataclass(frozen=True)
+class ChatStreamChunk:
+    """One incremental chunk from a streaming backend call."""
+
+    delta: str = ""
+    finish_reason: Optional[str] = None
     usage: Optional["TokenUsage"] = None
 
 
@@ -89,6 +98,12 @@ def _usage_from_ollama(response: Mapping) -> Optional[TokenUsage]:
 
 class LLMBackend(Protocol):
     def chat(self, request: ChatRequest) -> ChatResponse: ...
+
+
+class StreamingLLMBackend(Protocol):
+    def chat(self, request: ChatRequest) -> ChatResponse: ...
+
+    def stream_chat(self, request: ChatRequest) -> Iterator[ChatStreamChunk]: ...
 
 
 def probe_ollama(
@@ -200,6 +215,69 @@ class OpenAICompatibleBackend:
             raise BackendError("OpenAI-compatible backend response content is not a string")
         return ChatResponse(content=content, raw=response, usage=_usage_from_openai(response))
 
+    def stream_chat(self, request: ChatRequest) -> Iterator[ChatStreamChunk]:
+        base_url = (self.config.base_url or "").rstrip("/")
+        payload = {
+            "model": self.config.model,
+            "messages": [message.to_dict() for message in request.messages],
+            "temperature": request.temperature,
+            "stream": True,
+        }
+        if request.max_tokens is not None:
+            payload["max_tokens"] = request.max_tokens
+
+        saw_finish = False
+        for line in _post_stream_lines(
+            f"{base_url}/v1/chat/completions",
+            payload,
+            timeout=self.config.timeout_seconds,
+            api_key=self.config.api_key,
+        ):
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                if not saw_finish:
+                    yield ChatStreamChunk(finish_reason="stop")
+                return
+            try:
+                decoded = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise BackendError(
+                    "OpenAI-compatible streaming backend returned invalid SSE JSON"
+                ) from exc
+            if not isinstance(decoded, Mapping):
+                raise BackendError(
+                    "OpenAI-compatible streaming backend returned a non-object chunk"
+                )
+
+            usage = _usage_from_openai(decoded)
+            choices = decoded.get("choices")
+            delta = ""
+            finish_reason = None
+            if isinstance(choices, list) and choices:
+                choice = choices[0]
+                if isinstance(choice, Mapping):
+                    delta_obj = choice.get("delta")
+                    if isinstance(delta_obj, Mapping):
+                        content = delta_obj.get("content")
+                        if isinstance(content, str):
+                            delta = content
+                    raw_finish = choice.get("finish_reason")
+                    if isinstance(raw_finish, str):
+                        finish_reason = raw_finish
+                        saw_finish = True
+
+            if delta or finish_reason is not None or usage is not None:
+                yield ChatStreamChunk(
+                    delta=delta,
+                    finish_reason=finish_reason,
+                    usage=usage,
+                )
+
+        if not saw_finish:
+            yield ChatStreamChunk(finish_reason="stop")
+
 
 class OllamaBackend:
     """Adapter for Ollama's /api/chat endpoint."""
@@ -232,6 +310,52 @@ class OllamaBackend:
             raise BackendError("Ollama backend response content is not a string")
         return ChatResponse(content=content, raw=response, usage=_usage_from_ollama(response))
 
+    def stream_chat(self, request: ChatRequest) -> Iterator[ChatStreamChunk]:
+        base_url = (self.config.base_url or "").rstrip("/")
+        payload = {
+            "model": self.config.model,
+            "messages": [message.to_dict() for message in request.messages],
+            "stream": True,
+            "options": {"temperature": request.temperature},
+        }
+        if request.max_tokens is not None:
+            payload["options"]["num_predict"] = request.max_tokens
+
+        saw_finish = False
+        for line in _post_stream_lines(
+            f"{base_url}/api/chat",
+            payload,
+            timeout=self.config.timeout_seconds,
+            api_key=self.config.api_key,
+        ):
+            try:
+                decoded = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise BackendError("Ollama streaming backend returned invalid JSON") from exc
+            if not isinstance(decoded, Mapping):
+                raise BackendError("Ollama streaming backend returned a non-object chunk")
+
+            message = decoded.get("message")
+            delta = ""
+            if isinstance(message, Mapping):
+                content = message.get("content")
+                if isinstance(content, str):
+                    delta = content
+            done = decoded.get("done") is True
+            usage = _usage_from_ollama(decoded) if done else None
+            if delta or done or usage is not None:
+                yield ChatStreamChunk(
+                    delta=delta,
+                    finish_reason="stop" if done else None,
+                    usage=usage,
+                )
+            if done:
+                saw_finish = True
+                return
+
+        if not saw_finish:
+            yield ChatStreamChunk(finish_reason="stop")
+
 
 class EchoBackend:
     """Offline backend for tests, examples, and development without a real LLM."""
@@ -248,6 +372,59 @@ class EchoBackend:
             f"user={user[:1000]}"
         )
         return ChatResponse(content=content, raw={"backend": "echo"})
+
+    def stream_chat(self, request: ChatRequest) -> Iterator[ChatStreamChunk]:
+        response = self.chat(request)
+        midpoint = max(1, len(response.content) // 2)
+        for start in range(0, len(response.content), midpoint):
+            yield ChatStreamChunk(delta=response.content[start : start + midpoint])
+        yield ChatStreamChunk(finish_reason="stop", usage=response.usage)
+
+
+def _post_stream_lines(
+    url: str,
+    payload: Mapping,
+    *,
+    timeout: float,
+    api_key: Optional[str] = None,
+) -> Iterator[str]:
+    data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "content-type": "application/json",
+        "accept": "text/event-stream, application/x-ndjson, application/json",
+    }
+    if api_key:
+        headers["authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    safe_url = _safe_url(url)
+    try:
+        response = urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        try:
+            exc.read()
+        except Exception:  # noqa: BLE001 - best-effort cleanup only.
+            pass
+        raise BackendError(
+            f"HTTP {exc.code} from {safe_url} (backend response body redacted)"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise BackendError(f"Could not reach {safe_url}: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise BackendError(f"Timed out calling {safe_url}") from exc
+
+    try:
+        with response:
+            for raw_line in response:
+                try:
+                    line = raw_line.decode("utf-8").strip()
+                except UnicodeDecodeError as exc:
+                    raise BackendError(
+                        f"Non-UTF-8 streaming response from {safe_url} (body redacted)"
+                    ) from exc
+                if line:
+                    yield line
+    except (OSError, TimeoutError) as exc:
+        raise BackendError(f"Streaming connection failed for {safe_url}") from exc
 
 
 def _post_json(
