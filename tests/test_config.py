@@ -362,6 +362,7 @@ class ModelPoolConfigTests(unittest.TestCase):
                         "timeout_seconds": 1,
                         "failure_threshold": 3,
                         "success_threshold": 2,
+                        "require_model": True,
                     },
                 }
             )
@@ -373,6 +374,7 @@ class ModelPoolConfigTests(unittest.TestCase):
         self.assertEqual(health.timeout_seconds, 1.0)
         self.assertEqual(health.failure_threshold, 3)
         self.assertEqual(health.success_threshold, 2)
+        self.assertTrue(health.require_model)
 
     def test_rejects_non_positive_active_health_values(self):
         for field, value in (
@@ -395,19 +397,21 @@ class ModelPoolConfigTests(unittest.TestCase):
                         )
                     )
 
-    def test_rejects_active_health_for_unsupported_backend(self):
-        with self.assertRaises(ConfigError):
-            config_from_dict(
-                self._with_pool(
-                    {
-                        "name": "fast",
-                        "backend": "openai-compatible",
-                        "model": "local-model",
-                        "endpoints": ["http://127.0.0.1:1234/v1"],
-                        "health": {"enabled": True},
-                    }
-                )
+    def test_accepts_active_health_for_openai_compatible_backend(self):
+        config = config_from_dict(
+            self._with_pool(
+                {
+                    "name": "fast",
+                    "backend": "openai-compatible",
+                    "model": "local-model",
+                    "endpoints": ["http://127.0.0.1:1234"],
+                    "health": {"enabled": True, "require_model": True},
+                }
             )
+        )
+
+        self.assertTrue(config.model_pools[0].health.enabled)
+        self.assertTrue(config.model_pools[0].health.require_model)
 
     def test_rejects_negative_pool_cooldown_seconds(self):
         with self.assertRaises(ConfigError):

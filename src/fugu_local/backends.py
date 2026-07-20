@@ -91,7 +91,13 @@ class LLMBackend(Protocol):
     def chat(self, request: ChatRequest) -> ChatResponse: ...
 
 
-def probe_ollama(base_url: str, *, timeout_seconds: float) -> bool:
+def probe_ollama(
+    base_url: str,
+    *,
+    timeout_seconds: float,
+    model: Optional[str] = None,
+    require_model: bool = False,
+) -> bool:
     """Return whether an Ollama endpoint responds successfully to ``/api/tags``."""
 
     url = f"{base_url.rstrip('/')}/api/tags"
@@ -102,9 +108,56 @@ def probe_ollama(base_url: str, *, timeout_seconds: float) -> bool:
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            return 200 <= response.status < 300
+            if not 200 <= response.status < 300:
+                return False
+            if not require_model:
+                return True
+            payload = json.loads(response.read().decode("utf-8"))
     except (OSError, TimeoutError, urllib.error.URLError):
         return False
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+
+    models = payload.get("models") if isinstance(payload, Mapping) else None
+    if not isinstance(models, list) or model is None:
+        return False
+    return any(
+        isinstance(item, Mapping) and model in {item.get("name"), item.get("model")}
+        for item in models
+    )
+
+
+def probe_openai_compatible(
+    base_url: str,
+    *,
+    timeout_seconds: float,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    require_model: bool = False,
+) -> bool:
+    """Return whether an OpenAI-compatible endpoint responds to ``/v1/models``."""
+
+    url = f"{base_url.rstrip('/')}/v1/models"
+    headers = {"accept": "application/json"}
+    if api_key:
+        headers["authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            if not 200 <= response.status < 300:
+                return False
+            if not require_model:
+                return True
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, TimeoutError, urllib.error.URLError):
+        return False
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+
+    models = payload.get("data") if isinstance(payload, Mapping) else None
+    if not isinstance(models, list) or model is None:
+        return False
+    return any(isinstance(item, Mapping) and item.get("id") == model for item in models)
 
 
 def build_backend(config: ModelConfig) -> LLMBackend:

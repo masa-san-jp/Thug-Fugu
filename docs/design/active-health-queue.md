@@ -12,15 +12,15 @@ Status:
 
 - Passive health state based on cooldown/failure tracking is exposed through
   `/health`.
-- Ollama active probes and health-aware routing are implemented.
-- HTTP queueing and OpenAI-compatible probes remain future work.
+- Ollama and OpenAI-compatible active probes, health-aware routing, strict
+  model presence checks, and bounded HTTP queueing are implemented.
 
 ## 2. Current state
 
 - `model_pools[]` groups multiple endpoints under one logical model.
 - policies: `round_robin`, `least_busy`
 - failed endpoint can be passively deprioritized with `cooldown_seconds`
-- optional Ollama `/api/tags` background health polling
+- optional Ollama `/api/tags` or OpenAI-compatible `/v1/models` background polling
 - optional bounded HTTP request queue (`server.queue`)
 
 ## 3. Goals
@@ -222,6 +222,11 @@ Disabled by default. `/health` reports queue size and limits.
 
 - Add `/v1/models` probe support
 - Add config for strict model presence checks
+
+Status: implemented. OpenAI-compatible pools probe their configured base
+URL plus `/v1/models` and forward the configured bearer token. `require_model`
+supports strict model presence checks for both OpenAI-compatible and Ollama
+responses.
 
 ## 13. Risks
 

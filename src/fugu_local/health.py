@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from .backends import probe_ollama
+from .backends import probe_ollama, probe_openai_compatible
 from .config import ModelPoolConfig
 from .routing import ModelRouter
 
@@ -17,8 +17,11 @@ class HealthProbeTarget:
     pool_name: str
     member_key: str
     backend: str
+    model: str
     interval_seconds: float
     timeout_seconds: float
+    require_model: bool
+    api_key: Optional[str] = field(default=None, repr=False, compare=False)
 
 
 ProbeFunction = Callable[[HealthProbeTarget], bool]
@@ -133,8 +136,11 @@ class HealthMonitor:
                         pool_name=pool.name,
                         member_key=endpoint,
                         backend=pool.backend,
+                        model=pool.model,
                         interval_seconds=pool.health.interval_seconds,
                         timeout_seconds=pool.health.timeout_seconds,
+                        require_model=pool.health.require_model,
+                        api_key=pool.api_key,
                     )
                 )
         return targets
@@ -145,5 +151,15 @@ class HealthMonitor:
             return probe_ollama(
                 target.member_key,
                 timeout_seconds=target.timeout_seconds,
+                model=target.model,
+                require_model=target.require_model,
+            )
+        if target.backend == "openai-compatible":
+            return probe_openai_compatible(
+                target.member_key,
+                timeout_seconds=target.timeout_seconds,
+                api_key=target.api_key,
+                model=target.model,
+                require_model=target.require_model,
             )
         return False
