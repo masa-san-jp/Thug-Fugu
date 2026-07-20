@@ -24,6 +24,22 @@ def _request():
 
 
 class ModelRouterTests(unittest.TestCase):
+    def test_health_snapshot_redacts_endpoint_credentials_and_query(self):
+        router = ModelRouter(
+            "m",
+            [
+                RouterMember(
+                    "https://user:secret@example.test:8443/v1?api_key=secret#fragment",
+                    RecordingBackend("ok"),
+                )
+            ],
+        )
+
+        health = router.health_snapshot()
+
+        self.assertEqual(health[0]["endpoint"], "https://example.test:8443/v1")
+        self.assertNotIn("secret", health[0]["endpoint"])
+
     def test_round_robin_rotates_members(self):
         a = RecordingBackend("a")
         b = RecordingBackend("b")
@@ -69,6 +85,11 @@ class ModelRouterTests(unittest.TestCase):
 
         self.assertEqual(down.calls, 1)
         self.assertEqual(up.calls, 2)
+
+        health = {member["endpoint"]: member for member in router.health_snapshot()}
+        self.assertEqual(health["down"]["state"], "degraded")
+        self.assertGreater(health["down"]["cooldown_remaining_seconds"], 0)
+        self.assertEqual(health["up"]["state"], "healthy")
 
     def test_raises_when_all_members_fail(self):
         router = ModelRouter(
@@ -134,6 +155,25 @@ class PoolOrchestrationTests(unittest.TestCase):
         self.assertEqual(worker.content, "from-11435")
         self.assertEqual(down.calls, 1)
         self.assertEqual(up.calls, 1)
+
+    def test_model_pool_health_exposes_passive_member_state(self):
+        orchestrator = FuguLocalOrchestrator(
+            self._pool_config(),
+            backend_overrides={
+                "http://127.0.0.1:11434": RecordingBackend("a"),
+                "http://127.0.0.1:11435": RecordingBackend("b"),
+                "synth-model": RecordingBackend("final"),
+            },
+        )
+
+        health = orchestrator.model_pool_health()
+
+        self.assertEqual(list(health), ["fast"])
+        self.assertEqual(
+            [member["endpoint"] for member in health["fast"]],
+            ["http://127.0.0.1:11434/", "http://127.0.0.1:11435/"],
+        )
+        self.assertTrue(all(member["state"] == "healthy" for member in health["fast"]))
 
     def test_pool_worker_fails_only_when_all_endpoints_fail(self):
         orchestrator = FuguLocalOrchestrator(

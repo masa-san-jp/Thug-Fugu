@@ -8,6 +8,12 @@ Current model pools support failover, least-busy routing, and passive cooldown
 after failures. This is enough for many local setups, but it still discovers
 dead endpoints only on user traffic and has no backpressure queue.
 
+Status:
+
+- Passive health state based on cooldown/failure tracking is exposed through
+  `/health`.
+- Active background probes and queueing remain future work.
+
 ## 2. Current state
 
 - `model_pools[]` groups multiple endpoints under one logical model.
@@ -188,6 +194,9 @@ Do not include prompts, completions, or credentials.
 - Add state ordering to routing
 - Add tests for healthy/degraded/unhealthy ordering
 
+Status: implemented for passive cooldown state (`healthy` / `degraded`) and
+`/health` observability.
+
 ### Phase 2: active probes
 
 - Add `HealthMonitor`
@@ -219,4 +228,3 @@ Do not include prompts, completions, or credentials.
 - `/health` reports model pool state without sensitive content.
 - Queue is disabled by default and bounded when enabled.
 - Existing behavior remains unchanged when health/queue config is absent.
-
