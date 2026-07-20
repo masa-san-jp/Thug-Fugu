@@ -252,6 +252,7 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 - `policy`: `round_robin`（呼び出しごとに先頭メンバーをローテーション）または `least_busy`（同時実行中の最も少ないメンバーを優先）。
 - **フェイルオーバー**: あるメンバーが失敗したら同プールの次メンバーへ再試行。全メンバー失敗で初めてそのロールが失敗扱いになる。
 - **受動ヘルスチェック（サーキットブレーカ）**: `cooldown_seconds` を指定すると、失敗したメンバーを一定時間だけ選抜の後ろへ回す（デプライオリティ化）。成功で即回復。全メンバーが cooldown 中でも除外はせず必ず試行するため、単一エンドポイントや全滅時も従来通り動く。既定 `0` は無効（後方互換）。
+- `/health` は model pool endpoint の passive health state（`healthy` / `degraded`、busy、failures、cooldown remaining）を返します。
 - role は `models[].name` でも `model_pools[].name` でも参照可能（名前空間は一意）。
 - サンプル: `examples/fugu-local.model-pool.json`。
 - 能動的な定期 health ポーリングや動的発見・キューはまだ未実装。現状は失敗時フェイルオーバー＋受動 cooldown で代替する。

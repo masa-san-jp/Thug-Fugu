@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -22,6 +23,26 @@ from .backends import ChatRequest, ChatResponse, LLMBackend
 
 class RoutingError(RuntimeError):
     """Raised when a router has no members to dispatch to."""
+
+
+def _safe_endpoint_label(endpoint: str) -> str:
+    """Drop URL credentials, query parameters, and fragments from health output."""
+
+    parsed = urllib.parse.urlsplit(endpoint)
+    if not parsed.scheme or not parsed.hostname:
+        return parsed.path or endpoint
+
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is not None:
+        host = f"{host}:{port}"
+
+    return urllib.parse.urlunsplit((parsed.scheme, host, parsed.path or "/", "", ""))
 
 
 @dataclass
@@ -58,6 +79,26 @@ class ModelRouter:
     @property
     def members(self) -> List[RouterMember]:
         return list(self._members)
+
+    def health_snapshot(self) -> List[dict]:
+        """Return non-sensitive passive health state for observability."""
+
+        now = time.monotonic()
+        with self._lock:
+            snapshot = []
+            for member in self._members:
+                cooldown_remaining = max(0.0, member.cooldown_until - now)
+                state = "degraded" if cooldown_remaining > 0 else "healthy"
+                snapshot.append(
+                    {
+                        "endpoint": _safe_endpoint_label(member.key),
+                        "state": state,
+                        "busy": member.busy,
+                        "failures": member.failures,
+                        "cooldown_remaining_seconds": round(cooldown_remaining, 3),
+                    }
+                )
+            return snapshot
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         order = self._attempt_order()

@@ -68,6 +68,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["roles"], ["planner"])
         self.assertEqual(body["max_concurrent_requests"], 4)
+        self.assertEqual(body["model_pools"], {})
 
     def test_models_endpoint(self):
         with urllib.request.urlopen(f"{self.base_url}/v1/models", timeout=5) as response:

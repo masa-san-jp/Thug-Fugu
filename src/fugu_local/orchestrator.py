@@ -153,6 +153,13 @@ class FuguLocalOrchestrator:
     def roles(self) -> List[RoleConfig]:
         return list(self.config.roles)
 
+    def model_pool_health(self) -> Dict[str, List[dict]]:
+        return {
+            pool.name: self._routers[pool.name].health_snapshot()
+            for pool in self.config.model_pools
+            if pool.name in self._routers
+        }
+
     def chat(
         self,
         messages: List[ChatMessage],

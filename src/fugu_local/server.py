@@ -58,6 +58,7 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                     "service": "fugu-local",
                     "roles": [role.name for role in self.server.orchestrator.roles],
                     "max_concurrent_requests": self.server.max_concurrent_requests,
+                    "model_pools": self.server.orchestrator.model_pool_health(),
                 },
             )
             return
