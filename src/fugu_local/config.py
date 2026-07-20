@@ -35,6 +35,17 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class HealthCheckConfig:
+    """Active health-probe settings for a model pool. Disabled by default."""
+
+    enabled: bool = False
+    interval_seconds: float = 30.0
+    timeout_seconds: float = 2.0
+    failure_threshold: int = 2
+    success_threshold: int = 1
+
+
+@dataclass(frozen=True)
 class ModelPoolConfig:
     name: str
     backend: str
@@ -44,6 +55,7 @@ class ModelPoolConfig:
     api_key: Optional[str] = None
     timeout_seconds: float = 120.0
     cooldown_seconds: float = 0.0
+    health: HealthCheckConfig = field(default_factory=HealthCheckConfig)
 
 
 @dataclass(frozen=True)
@@ -394,6 +406,21 @@ def _validate_tool_calling(config: ToolCallingConfig) -> None:
             )
 
 
+def _health_check_from_dict(raw: Any) -> HealthCheckConfig:
+    obj = _required_object(raw, "model_pool.health")
+    failure_threshold = _optional_int(obj, "failure_threshold", default=2)
+    success_threshold = _optional_int(obj, "success_threshold", default=1)
+    assert failure_threshold is not None
+    assert success_threshold is not None
+    return HealthCheckConfig(
+        enabled=_optional_bool(obj, "enabled", default=False),
+        interval_seconds=_optional_number(obj, "interval_seconds", default=30.0),
+        timeout_seconds=_optional_number(obj, "timeout_seconds", default=2.0),
+        failure_threshold=failure_threshold,
+        success_threshold=success_threshold,
+    )
+
+
 def _model_pool_from_dict(raw: Any) -> ModelPoolConfig:
     obj = _required_object(raw, "model_pool entry")
     endpoints_raw = obj.get("endpoints")
@@ -410,6 +437,7 @@ def _model_pool_from_dict(raw: Any) -> ModelPoolConfig:
         api_key=_expand_optional_env(_optional_str(obj, "api_key")),
         timeout_seconds=_optional_number(obj, "timeout_seconds", default=120.0),
         cooldown_seconds=_optional_number(obj, "cooldown_seconds", default=0.0),
+        health=_health_check_from_dict(obj.get("health", {})),
     )
 
 
@@ -431,6 +459,27 @@ def _validate_model_pools(config: FuguLocalConfig) -> None:
             raise ConfigError(f"timeout_seconds must be positive for model_pool '{pool.name}'")
         if pool.cooldown_seconds < 0:
             raise ConfigError(f"cooldown_seconds must be non-negative for model_pool '{pool.name}'")
+        if pool.health.interval_seconds <= 0:
+            raise ConfigError(
+                f"health.interval_seconds must be positive for model_pool '{pool.name}'"
+            )
+        if pool.health.timeout_seconds <= 0:
+            raise ConfigError(
+                f"health.timeout_seconds must be positive for model_pool '{pool.name}'"
+            )
+        if pool.health.failure_threshold <= 0:
+            raise ConfigError(
+                f"health.failure_threshold must be positive for model_pool '{pool.name}'"
+            )
+        if pool.health.success_threshold <= 0:
+            raise ConfigError(
+                f"health.success_threshold must be positive for model_pool '{pool.name}'"
+            )
+        if pool.health.enabled and pool.backend != "ollama":
+            raise ConfigError(
+                f"active health probes currently support only the ollama backend; "
+                f"model_pool '{pool.name}' uses '{pool.backend}'"
+            )
 
 
 def _optional_list(raw: Mapping[str, Any], key: str) -> List[Any]:

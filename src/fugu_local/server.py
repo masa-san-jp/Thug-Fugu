@@ -39,6 +39,17 @@ class FuguLocalHTTPServer(ThreadingHTTPServer):
         self.max_concurrent_requests = max_concurrent_requests
         self._request_semaphore = threading.BoundedSemaphore(max_concurrent_requests)
 
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        self.orchestrator.start_health_monitor()
+        try:
+            super().serve_forever(poll_interval=poll_interval)
+        finally:
+            self.orchestrator.stop_health_monitor()
+
+    def server_close(self) -> None:
+        self.orchestrator.stop_health_monitor()
+        super().server_close()
+
     def try_acquire_request_slot(self) -> bool:
         return self._request_semaphore.acquire(blocking=False)
 

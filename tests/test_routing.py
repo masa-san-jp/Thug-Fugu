@@ -55,6 +55,77 @@ class ModelRouterTests(unittest.TestCase):
 
         self.assertEqual([first, second, third], ["a", "b", "a"])
 
+    def test_active_health_state_transitions_respect_thresholds(self):
+        router = ModelRouter(
+            "m",
+            [RouterMember("a", RecordingBackend("a"))],
+            active_health_enabled=True,
+            health_failure_threshold=2,
+            health_success_threshold=2,
+        )
+
+        self.assertEqual(router.health_snapshot()[0]["state"], "unknown")
+
+        router.record_probe_result("a", False, timestamp=10.0)
+        health = router.health_snapshot()[0]
+        self.assertEqual(health["state"], "degraded")
+        self.assertEqual(health["failures"], 1)
+        self.assertEqual(health["last_probe_at"], 10.0)
+        self.assertEqual(health["last_failure_at"], 10.0)
+
+        router.record_probe_result("a", False, timestamp=20.0)
+        self.assertEqual(router.health_snapshot()[0]["state"], "unhealthy")
+
+        router.record_probe_result("a", True, timestamp=30.0)
+        health = router.health_snapshot()[0]
+        self.assertEqual(health["state"], "degraded")
+        self.assertEqual(health["failures"], 0)
+
+        router.record_probe_result("a", True, timestamp=40.0)
+        health = router.health_snapshot()[0]
+        self.assertEqual(health["state"], "healthy")
+        self.assertEqual(health["failures"], 0)
+        self.assertEqual(health["last_success_at"], 40.0)
+
+    def test_routing_orders_members_by_active_health_state(self):
+        router = ModelRouter(
+            "m",
+            [
+                RouterMember("unhealthy", RecordingBackend("unhealthy")),
+                RouterMember("degraded", RecordingBackend("degraded")),
+                RouterMember("unknown", RecordingBackend("unknown")),
+                RouterMember("healthy", RecordingBackend("healthy")),
+            ],
+            active_health_enabled=True,
+            health_failure_threshold=2,
+        )
+        router.record_probe_result("unhealthy", False)
+        router.record_probe_result("unhealthy", False)
+        router.record_probe_result("degraded", False)
+        router.record_probe_result("healthy", True)
+
+        order = [member.key for member in router._attempt_order()]
+
+        self.assertEqual(order, ["healthy", "unknown", "degraded", "unhealthy"])
+
+    def test_all_unhealthy_members_are_still_attempted(self):
+        a = RecordingBackend("a", fail=True)
+        b = RecordingBackend("b", fail=True)
+        router = ModelRouter(
+            "m",
+            [RouterMember("a", a), RouterMember("b", b)],
+            active_health_enabled=True,
+            health_failure_threshold=1,
+        )
+        router.record_probe_result("a", False)
+        router.record_probe_result("b", False)
+
+        with self.assertRaises(RuntimeError):
+            router.chat(_request())
+
+        self.assertEqual(a.calls, 1)
+        self.assertEqual(b.calls, 1)
+
     def test_failover_to_next_member(self):
         down = RecordingBackend("down", fail=True)
         up = RecordingBackend("up")

@@ -10,6 +10,7 @@ from fugu_local.backends import (
     ChatRequest,
     OllamaBackend,
     OpenAICompatibleBackend,
+    probe_ollama,
 )
 from fugu_local.config import ModelConfig
 
@@ -74,6 +75,30 @@ class BackendRedactionTests(unittest.TestCase):
         self.assertIn("Non-JSON response", message)
         self.assertIn("redacted", message)
         self.assertNotIn(secret, message)
+
+
+class OllamaProbeTests(unittest.TestCase):
+    def test_probe_uses_tags_endpoint_and_timeout(self):
+        response = mock.MagicMock()
+        response.status = 200
+        response.__enter__.return_value = response
+
+        with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+            healthy = probe_ollama("http://localhost:11434/", timeout_seconds=2.5)
+
+        self.assertTrue(healthy)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://localhost:11434/api/tags")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 2.5)
+
+    def test_probe_returns_false_on_connection_error(self):
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError("down"),
+        ):
+            healthy = probe_ollama("http://localhost:11434", timeout_seconds=1)
+
+        self.assertFalse(healthy)
 
 
 class UsageParsingTests(unittest.TestCase):
