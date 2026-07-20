@@ -240,7 +240,14 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
       "model": "gpt-oss:20b",
       "endpoints": ["http://127.0.0.1:11434", "http://127.0.0.1:11435"],
       "policy": "least_busy",
-      "cooldown_seconds": 30
+      "cooldown_seconds": 30,
+      "health": {
+        "enabled": true,
+        "interval_seconds": 30,
+        "timeout_seconds": 2,
+        "failure_threshold": 2,
+        "success_threshold": 1
+      }
     }
   ],
   "roles": [
@@ -252,10 +259,12 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 - `policy`: `round_robin`（呼び出しごとに先頭メンバーをローテーション）または `least_busy`（同時実行中の最も少ないメンバーを優先）。
 - **フェイルオーバー**: あるメンバーが失敗したら同プールの次メンバーへ再試行。全メンバー失敗で初めてそのロールが失敗扱いになる。
 - **受動ヘルスチェック（サーキットブレーカ）**: `cooldown_seconds` を指定すると、失敗したメンバーを一定時間だけ選抜の後ろへ回す（デプライオリティ化）。成功で即回復。全メンバーが cooldown 中でも除外はせず必ず試行するため、単一エンドポイントや全滅時も従来通り動く。既定 `0` は無効（後方互換）。
-- `/health` は model pool endpoint の passive health state（`healthy` / `degraded`、busy、failures、cooldown remaining）を返します。
+- **能動ヘルスチェック**: `health.enabled=true` にすると、HTTP server 起動前および起動中に Ollama `/api/tags` を定期確認します。既定は無効です。one-shot の `run` では起動しません。
+- routing は `healthy` → `unknown` → `degraded` → `unhealthy` の順に優先します。全 endpoint が unhealthy でも回復確認のため試行自体は継続します。
+- `/health` は model pool endpoint の state、busy、failures、cooldown remaining、最終 probe/success/failure 時刻を返します。URL の credentials・query・fragment は出力しません。
 - role は `models[].name` でも `model_pools[].name` でも参照可能（名前空間は一意）。
 - サンプル: `examples/fugu-local.model-pool.json`。
-- 能動的な定期 health ポーリングや動的発見・キューはまだ未実装。現状は失敗時フェイルオーバー＋受動 cooldown で代替する。
+- OpenAI-compatible endpoint の能動 probe、動的発見、HTTP queue はまだ未実装です。
 
 例:
 
@@ -429,7 +438,7 @@ python3 -m coverage report --fail-under=80
 |---|---|---|---|
 | HTTP server-side tool execution | HTTP の明示 `tool_calls` 実行は対応済み。backend に tool call を生成させる pass-through は未実装 | 次にやるなら assistant tool proposal / backend pass-through | [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md) |
 | true token streaming | `stream:true` は buffered SSE。生成後に chunk 化する | まず `direct` pattern の単一 backend call だけ token streaming。role_split は worker 完了後の synthesizer streaming を後続にする | [true-token-streaming.md](docs/design/true-token-streaming.md) |
-| active health polling / queue | 失敗時 failover と passive cooldown は実装済み。能動 health poll / queue は未実装 | まず router に health state を持たせ、Ollama `/api/tags` probe を HTTP server 起動時だけ有効化。queue はさらに後続 | [active-health-queue.md](docs/design/active-health-queue.md) |
+| active health polling / queue | failover、passive cooldown、Ollama `/api/tags` active probe は実装済み。OpenAI-compatible probe / queue は未実装 | bounded HTTP queue、続いて OpenAI-compatible `/v1/models` probe を追加 | [active-health-queue.md](docs/design/active-health-queue.md) |
 
 判断目安:
 

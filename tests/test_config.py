@@ -277,6 +277,7 @@ class ModelPoolConfigTests(unittest.TestCase):
         self.assertEqual(config.model_pools[0].policy, "least_busy")
         self.assertEqual(len(config.model_pools[0].endpoints), 2)
         self.assertEqual(config.model_pools[0].cooldown_seconds, 0.0)
+        self.assertFalse(config.model_pools[0].health.enabled)
 
     def test_accepts_pool_cooldown_seconds(self):
         config = config_from_dict(
@@ -292,6 +293,67 @@ class ModelPoolConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(config.model_pools[0].cooldown_seconds, 30.0)
+
+    def test_accepts_active_health_config(self):
+        config = config_from_dict(
+            self._with_pool(
+                {
+                    "name": "fast",
+                    "backend": "ollama",
+                    "model": "gpt-oss:20b",
+                    "endpoints": ["http://127.0.0.1:11434"],
+                    "health": {
+                        "enabled": True,
+                        "interval_seconds": 10,
+                        "timeout_seconds": 1,
+                        "failure_threshold": 3,
+                        "success_threshold": 2,
+                    },
+                }
+            )
+        )
+
+        health = config.model_pools[0].health
+        self.assertTrue(health.enabled)
+        self.assertEqual(health.interval_seconds, 10.0)
+        self.assertEqual(health.timeout_seconds, 1.0)
+        self.assertEqual(health.failure_threshold, 3)
+        self.assertEqual(health.success_threshold, 2)
+
+    def test_rejects_non_positive_active_health_values(self):
+        for field, value in (
+            ("interval_seconds", 0),
+            ("timeout_seconds", 0),
+            ("failure_threshold", 0),
+            ("success_threshold", 0),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaises(ConfigError):
+                    config_from_dict(
+                        self._with_pool(
+                            {
+                                "name": "fast",
+                                "backend": "ollama",
+                                "model": "gpt-oss:20b",
+                                "endpoints": ["http://127.0.0.1:11434"],
+                                "health": {"enabled": True, field: value},
+                            }
+                        )
+                    )
+
+    def test_rejects_active_health_for_unsupported_backend(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._with_pool(
+                    {
+                        "name": "fast",
+                        "backend": "openai-compatible",
+                        "model": "local-model",
+                        "endpoints": ["http://127.0.0.1:1234/v1"],
+                        "health": {"enabled": True},
+                    }
+                )
+            )
 
     def test_rejects_negative_pool_cooldown_seconds(self):
         with self.assertRaises(ConfigError):

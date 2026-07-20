@@ -19,6 +19,7 @@ from .backends import (
 )
 from .config import FuguLocalConfig, ModelConfig, ModelPoolConfig, RoleConfig
 from .coordinator import Coordinator, Plan
+from .health import HealthMonitor
 from .routing import ModelRouter, RouterMember
 
 logger = logging.getLogger("fugu_local.orchestrator")
@@ -88,6 +89,7 @@ class FuguLocalOrchestrator:
         self._pools = config.pool_by_name()
         self._backend_overrides = backend_overrides or {}
         self._routers: Dict[str, ModelRouter] = self._build_routers()
+        self._health_monitor = HealthMonitor(self._routers, config.model_pools)
         self._coordinator = self._build_coordinator()
 
     def _build_routers(self) -> Dict[str, ModelRouter]:
@@ -107,6 +109,9 @@ class FuguLocalOrchestrator:
                 members,
                 policy=pool.policy,
                 cooldown_seconds=pool.cooldown_seconds,
+                active_health_enabled=pool.health.enabled,
+                health_failure_threshold=pool.health.failure_threshold,
+                health_success_threshold=pool.health.success_threshold,
             )
         return routers
 
@@ -159,6 +164,16 @@ class FuguLocalOrchestrator:
             for pool in self.config.model_pools
             if pool.name in self._routers
         }
+
+    def start_health_monitor(self) -> None:
+        self._health_monitor.start()
+
+    def stop_health_monitor(self) -> None:
+        self._health_monitor.stop()
+
+    @property
+    def health_monitor_running(self) -> bool:
+        return self._health_monitor.running
 
     def chat(
         self,

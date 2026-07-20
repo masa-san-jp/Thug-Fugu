@@ -10,7 +10,14 @@
       ],
       "policy": "least_busy",
       "timeout_seconds": 300,
-      "cooldown_seconds": 30
+      "cooldown_seconds": 30,
+      "health": {
+        "enabled": true,
+        "interval_seconds": 30,
+        "timeout_seconds": 2,
+        "failure_threshold": 2,
+        "success_threshold": 1
+      }
     }
   ],
   "models": [

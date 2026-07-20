@@ -91,6 +91,22 @@ class LLMBackend(Protocol):
     def chat(self, request: ChatRequest) -> ChatResponse: ...
 
 
+def probe_ollama(base_url: str, *, timeout_seconds: float) -> bool:
+    """Return whether an Ollama endpoint responds successfully to ``/api/tags``."""
+
+    url = f"{base_url.rstrip('/')}/api/tags"
+    request = urllib.request.Request(
+        url,
+        headers={"accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return 200 <= response.status < 300
+    except (OSError, TimeoutError, urllib.error.URLError):
+        return False
+
+
 def build_backend(config: ModelConfig) -> LLMBackend:
     if config.backend == "ollama":
         return OllamaBackend(config)

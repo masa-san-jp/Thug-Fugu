@@ -39,6 +39,22 @@ class UsageBackend:
         )
 
 
+class LifecycleMonitor:
+    def __init__(self):
+        self.started = threading.Event()
+        self.stopped = threading.Event()
+
+    def start(self):
+        self.started.set()
+
+    def stop(self):
+        self.stopped.set()
+
+    @property
+    def running(self):
+        return self.started.is_set() and not self.stopped.is_set()
+
+
 class ServerTests(unittest.TestCase):
     def setUp(self):
         config = config_from_dict(
@@ -69,6 +85,82 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(body["roles"], ["planner"])
         self.assertEqual(body["max_concurrent_requests"], 4)
         self.assertEqual(body["model_pools"], {})
+
+    def test_health_reports_active_pool_state_without_credentials(self):
+        endpoint = "http://user:secret@127.0.0.1:11434?token=secret"
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "model_pools": [
+                    {
+                        "name": "fast",
+                        "backend": "ollama",
+                        "model": "gpt-oss:20b",
+                        "endpoints": [endpoint],
+                        "health": {"enabled": True, "failure_threshold": 1},
+                    }
+                ],
+                "roles": [{"name": "worker", "model": "fast"}],
+            }
+        )
+        orchestrator = FuguLocalOrchestrator(
+            config,
+            backend_overrides={endpoint: UsageBackend()},
+        )
+        orchestrator._routers["fast"].record_probe_result(endpoint, False, timestamp=10.0)
+        orchestrator._health_monitor = LifecycleMonitor()
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            orchestrator,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/health",
+                timeout=5,
+            ) as response:
+                raw_body = response.read().decode("utf-8")
+                body = json.loads(raw_body)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        member = body["model_pools"]["fast"][0]
+        self.assertEqual(member["endpoint"], "http://127.0.0.1:11434/")
+        self.assertEqual(member["state"], "unhealthy")
+        self.assertEqual(member["last_probe_at"], 10.0)
+        self.assertNotIn("secret", raw_body)
+
+    def test_server_starts_and_stops_health_monitor(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+        orchestrator = FuguLocalOrchestrator(config)
+        monitor = LifecycleMonitor()
+        orchestrator._health_monitor = monitor
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            orchestrator,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            self.assertTrue(monitor.started.wait(timeout=1))
+
+            server.shutdown()
+            thread.join(timeout=2)
+
+            self.assertTrue(monitor.stopped.is_set())
+        finally:
+            server.server_close()
 
     def test_models_endpoint(self):
         with urllib.request.urlopen(f"{self.base_url}/v1/models", timeout=5) as response:

@@ -12,14 +12,15 @@ Status:
 
 - Passive health state based on cooldown/failure tracking is exposed through
   `/health`.
-- Active background probes and queueing remain future work.
+- Ollama active probes and health-aware routing are implemented.
+- HTTP queueing and OpenAI-compatible probes remain future work.
 
 ## 2. Current state
 
 - `model_pools[]` groups multiple endpoints under one logical model.
 - policies: `round_robin`, `least_busy`
 - failed endpoint can be passively deprioritized with `cooldown_seconds`
-- no background health polling
+- optional Ollama `/api/tags` background health polling
 - no queue beyond immediate HTTP concurrency limit
 
 ## 3. Goals
@@ -203,6 +204,10 @@ Status: implemented for passive cooldown state (`healthy` / `degraded`) and
 - Implement Ollama `/api/tags` probe
 - Add fake probe tests
 - Expose health in `/health`
+
+Status: implemented. The HTTP server performs an initial synchronous probe
+before accepting requests, then starts a daemon monitor thread. Shutdown stops
+and joins the monitor. One-shot CLI runs do not start it.
 
 ### Phase 3: optional HTTP queue
 
