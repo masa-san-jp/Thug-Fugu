@@ -569,6 +569,81 @@ class ToolCallingServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["object"], "chat.completion")
 
+    def test_tool_calls_execute_when_enabled(self):
+        base = self._server(
+            {
+                "enabled": True,
+                "mode": "synthesizer_only",
+                "execute": True,
+                "allowed_tools": ["echo"],
+            }
+        )
+        status, body = self._post(
+            base,
+            {
+                "messages": [{"role": "user", "content": "use evidence"}],
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": {"text": "local evidence"},
+                        },
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["object"], "chat.completion")
+        self.assertEqual(body["thug_fugu"]["tool_results"][0]["name"], "echo")
+        self.assertEqual(body["thug_fugu"]["tool_results"][0]["content"], "local evidence")
+        self.assertIn("local evidence", body["choices"][0]["message"]["content"])
+
+    def test_tool_calls_rejected_when_execution_disabled(self):
+        base = self._server({"enabled": True, "mode": "synthesizer_only"})
+        status, body = self._post(
+            base,
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": {"text": "x"}},
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("execute=true", body["error"]["message"])
+
+    def test_tool_calls_reject_malformed_arguments(self):
+        base = self._server(
+            {
+                "enabled": True,
+                "mode": "synthesizer_only",
+                "execute": True,
+                "allowed_tools": ["echo"],
+            }
+        )
+        status, body = self._post(
+            base,
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{not-json"},
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("invalid JSON arguments", body["error"]["message"])
+
     def test_invalid_tool_name_returns_400(self):
         base = self._server({"enabled": True, "mode": "synthesizer_only"})
         status, body = self._post(

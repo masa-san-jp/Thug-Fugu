@@ -100,7 +100,7 @@ This phase is useful for clients that execute tools themselves.
 
 ### Phase B: local allow-listed execution
 
-> Status: implemented at the library/consult layer. `consult(config, prompt, tool_calls=[...])` and the MCP `consult_thug_fugu` tool execute allow-listed local tools (`src/fugu_local/tools.py`) with a timeout and output-size cap, inject results as evidence, and re-synthesize. HTTP `/v1/chat/completions` server-side execution and backend tool pass-through remain future work.
+> Status: implemented for `consult(config, prompt, tool_calls=[...])`, the MCP `consult_thug_fugu` tool, and HTTP `/v1/chat/completions` when the client provides explicit `tool_calls`. Backend tool-call pass-through / backend-generated tool proposals remain future work.
 
 - Execute only registered local tools whose names appear in `allowed_tools`.
 - Tool registry is process-local Python code, not user-supplied shell.

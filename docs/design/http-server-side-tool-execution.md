@@ -5,6 +5,12 @@
 Add allow-listed local tool execution to the OpenAI-compatible HTTP endpoint
 `POST /v1/chat/completions`.
 
+Status:
+
+- Slice 1 (explicit HTTP `tool_calls` input) is implemented.
+- Backend-generated assistant tool proposals and backend pass-through remain
+  future work.
+
 The current HTTP path validates `tools` / `tool_choice` in shape-only mode but
 does not execute tools. The `consult()` / MCP path already supports allow-listed
 local execution. This spec defines how to bring that capability to HTTP without
@@ -36,7 +42,7 @@ turning the HTTP server into an arbitrary tool runner.
 - Do not implement multi-round autonomous tool loops in HTTP.
 - Do not expose side-effecting tools without a separate opt-in design.
 
-## 5. Proposed first slice: explicit tool_calls input
+## 5. Implemented first slice: explicit tool_calls input
 
 ### 5.1 Request shape
 
@@ -206,4 +212,3 @@ Unit / integration tests:
 - Slice 1: small/medium (server validation + reuse consult/tool helpers)
 - Slice 2: medium/high (requires response schema expansion)
 - Slice 3: high (backend-specific behavior)
-
