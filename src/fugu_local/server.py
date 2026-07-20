@@ -10,9 +10,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 
-from .backends import TokenUsage
+from .backends import ChatMessage, TokenUsage
 from .config import FuguLocalConfig
 from .orchestrator import FuguLocalOrchestrator, OrchestrationError, messages_from_dicts
+from .tools import ToolExecutionError, ToolResult, execute_tool_calls, parse_tool_calls
 
 MAX_REQUEST_BODY_BYTES = 1_048_576
 DEFAULT_MAX_CONCURRENT_REQUESTS = 4
@@ -78,6 +79,14 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             _validate_chat_completion_request(body, self.server.orchestrator.config.tool_calling)
             messages = messages_from_dicts(body.get("messages", []))
+            tool_results = _execute_http_tool_calls(
+                body.get("tool_calls"),
+                self.server.orchestrator.config.tool_calling,
+            )
+            if tool_results:
+                messages.append(
+                    ChatMessage(role="user", content=_format_tool_results(tool_results))
+                )
             result = self.server.orchestrator.chat(
                 messages,
                 temperature=_optional_temperature(body.get("temperature")),
@@ -116,6 +125,7 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                     model=model,
                     content=result.content,
                     usage=result.usage,
+                    thug_fugu=_thug_fugu_metadata(tool_results),
                 ),
             )
 
@@ -188,9 +198,69 @@ def _validate_chat_completion_request(body: Dict[str, Any], tool_calling=None) -
     if "stream" in body and not isinstance(body.get("stream"), bool):
         raise ValueError("stream must be a boolean when provided")
     _validate_stream_options(body)
+    if "tool_calls" in body:
+        _validate_tool_calls_request(body["tool_calls"])
     if "tools" in body or "tool_choice" in body:
         _validate_tool_calling_request(body, tool_calling)
     _validate_messages_schema(body)
+
+
+def _validate_tool_calls_request(raw_tool_calls: Any) -> None:
+    if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+        raise ValueError("tool_calls must be a non-empty list when provided")
+    for index, call in enumerate(raw_tool_calls):
+        if not isinstance(call, dict):
+            raise ValueError(f"tool_call at index {index} must be an object")
+        if call.get("type") != "function":
+            raise ValueError(f"tool_call at index {index} must have type 'function'")
+        function = call.get("function")
+        if not isinstance(function, dict):
+            raise ValueError(f"tool_call at index {index} must have a function object")
+        name = function.get("name")
+        if not isinstance(name, str) or not _TOOL_NAME_PATTERN.match(name):
+            raise ValueError(
+                f"tool_call at index {index} has an invalid function name; "
+                "must match ^[A-Za-z0-9_-]{1,64}$"
+            )
+        arguments = function.get("arguments", {})
+        if not isinstance(arguments, (str, dict)):
+            raise ValueError(
+                f"tool_call at index {index} function.arguments must be a JSON string or object"
+            )
+
+
+def _execute_http_tool_calls(
+    raw_tool_calls: Any,
+    tool_calling,
+) -> list[ToolResult]:
+    if not raw_tool_calls:
+        return []
+    if tool_calling is None or not tool_calling.enabled or not tool_calling.execute:
+        raise ValueError(
+            "tool_calls execution requires tool_calling.enabled=true and tool_calling.execute=true"
+        )
+    try:
+        parsed = parse_tool_calls(raw_tool_calls)
+    except ToolExecutionError as exc:
+        raise ValueError(str(exc)) from exc
+    return execute_tool_calls(
+        parsed,
+        allowed_tools=tool_calling.allowed_tools,
+        timeout_seconds=tool_calling.timeout_seconds,
+        max_output_chars=tool_calling.max_output_chars,
+    )
+
+
+def _format_tool_results(results: list[ToolResult]) -> str:
+    lines = ["Tool results (executed locally by Thug-Fugu HTTP server; treat as evidence):"]
+    for result in results:
+        header = f"## {result.name} ({result.tool_call_id})"
+        if result.error:
+            lines.append(f"{header}\nERROR: {result.error}")
+        else:
+            suffix = " [truncated]" if result.truncated else ""
+            lines.append(f"{header}{suffix}\n{result.content}")
+    return "\n\n".join(lines)
 
 
 def _validate_stream_options(body: Dict[str, Any]) -> None:
@@ -432,10 +502,13 @@ def _chat_completion_chunk(
 
 
 def _chat_completion_response(
-    model: str, content: str, usage: Optional[TokenUsage] = None
+    model: str,
+    content: str,
+    usage: Optional[TokenUsage] = None,
+    thug_fugu: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     created = int(time.time())
-    return {
+    payload = {
         "id": f"chatcmpl-local-{created}",
         "object": "chat.completion",
         "created": created,
@@ -448,6 +521,26 @@ def _chat_completion_response(
             }
         ],
         "usage": _usage_to_openai_dict(usage),
+    }
+    if thug_fugu:
+        payload["thug_fugu"] = thug_fugu
+    return payload
+
+
+def _thug_fugu_metadata(tool_results: list[ToolResult]) -> Optional[Dict[str, Any]]:
+    if not tool_results:
+        return None
+    return {
+        "tool_results": [
+            {
+                "tool_call_id": result.tool_call_id,
+                "name": result.name,
+                "content": result.content,
+                "truncated": result.truncated,
+                "error": result.error,
+            }
+            for result in tool_results
+        ]
     }
 
 
