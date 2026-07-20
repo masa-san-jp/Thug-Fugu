@@ -11,6 +11,7 @@ from fugu_local.backends import (
     OllamaBackend,
     OpenAICompatibleBackend,
     probe_ollama,
+    probe_openai_compatible,
 )
 from fugu_local.config import ModelConfig
 
@@ -91,12 +92,97 @@ class OllamaProbeTests(unittest.TestCase):
         self.assertEqual(request.full_url, "http://localhost:11434/api/tags")
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 2.5)
 
+    def test_probe_can_require_configured_model(self):
+        response = mock.MagicMock()
+        response.status = 200
+        response.read.return_value = json.dumps({"models": [{"name": "gpt-oss:20b"}]}).encode(
+            "utf-8"
+        )
+        response.__enter__.return_value = response
+
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            present = probe_ollama(
+                "http://localhost:11434",
+                timeout_seconds=1,
+                model="gpt-oss:20b",
+                require_model=True,
+            )
+            missing = probe_ollama(
+                "http://localhost:11434",
+                timeout_seconds=1,
+                model="missing",
+                require_model=True,
+            )
+
+        self.assertTrue(present)
+        self.assertFalse(missing)
+
     def test_probe_returns_false_on_connection_error(self):
         with mock.patch(
             "urllib.request.urlopen",
             side_effect=urllib.error.URLError("down"),
         ):
             healthy = probe_ollama("http://localhost:11434", timeout_seconds=1)
+
+        self.assertFalse(healthy)
+
+
+class OpenAICompatibleProbeTests(unittest.TestCase):
+    def test_probe_uses_models_endpoint_and_bearer_token(self):
+        response = mock.MagicMock()
+        response.status = 200
+        response.__enter__.return_value = response
+
+        with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+            healthy = probe_openai_compatible(
+                "http://localhost:1234/",
+                timeout_seconds=2,
+                api_key="secret",
+            )
+
+        self.assertTrue(healthy)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://localhost:1234/v1/models")
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+
+    def test_probe_can_require_configured_model(self):
+        response = mock.MagicMock()
+        response.status = 200
+        response.read.return_value = json.dumps(
+            {"data": [{"id": "local-model", "object": "model"}]}
+        ).encode("utf-8")
+        response.__enter__.return_value = response
+
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            present = probe_openai_compatible(
+                "http://localhost:1234",
+                timeout_seconds=1,
+                model="local-model",
+                require_model=True,
+            )
+            missing = probe_openai_compatible(
+                "http://localhost:1234",
+                timeout_seconds=1,
+                model="missing",
+                require_model=True,
+            )
+
+        self.assertTrue(present)
+        self.assertFalse(missing)
+
+    def test_strict_probe_rejects_invalid_json(self):
+        response = mock.MagicMock()
+        response.status = 200
+        response.read.return_value = b"not-json"
+        response.__enter__.return_value = response
+
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            healthy = probe_openai_compatible(
+                "http://localhost:1234",
+                timeout_seconds=1,
+                model="local-model",
+                require_model=True,
+            )
 
         self.assertFalse(healthy)
 

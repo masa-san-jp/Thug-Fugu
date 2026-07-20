@@ -41,6 +41,27 @@ class HealthMonitorTests(unittest.TestCase):
             health_success_threshold=1,
         )
 
+    def _openai_pool(self):
+        return ModelPoolConfig(
+            name="openai",
+            backend="openai-compatible",
+            model="local-model",
+            endpoints=["http://openai.test"],
+            api_key="secret",
+            health=HealthCheckConfig(
+                enabled=True,
+                timeout_seconds=1.5,
+                require_model=True,
+            ),
+        )
+
+    def _openai_router(self):
+        return ModelRouter(
+            "local-model",
+            [RouterMember("http://openai.test", StubBackend())],
+            active_health_enabled=True,
+        )
+
     def test_poll_once_updates_each_member(self):
         router = self._router()
         results = {"http://one.test": True, "http://two.test": False}
@@ -99,7 +120,31 @@ class HealthMonitorTests(unittest.TestCase):
             monitor.poll_once()
 
         self.assertEqual(probe.call_count, 2)
-        probe.assert_any_call("http://one.test", timeout_seconds=1.0)
+        probe.assert_any_call(
+            "http://one.test",
+            timeout_seconds=1.0,
+            model="gpt-oss:20b",
+            require_model=False,
+        )
+
+    def test_default_probe_supports_openai_compatible_backend(self):
+        router = self._openai_router()
+        monitor = HealthMonitor({"openai": router}, [self._openai_pool()])
+
+        with mock.patch(
+            "fugu_local.health.probe_openai_compatible",
+            return_value=True,
+        ) as probe:
+            monitor.poll_once()
+
+        probe.assert_called_once_with(
+            "http://openai.test",
+            timeout_seconds=1.5,
+            api_key="secret",
+            model="local-model",
+            require_model=True,
+        )
+        self.assertEqual(router.health_snapshot()[0]["state"], "healthy")
 
     def test_disabled_pool_has_no_targets_or_thread(self):
         router = self._router()

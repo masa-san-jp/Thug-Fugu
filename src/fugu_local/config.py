@@ -43,6 +43,7 @@ class HealthCheckConfig:
     timeout_seconds: float = 2.0
     failure_threshold: int = 2
     success_threshold: int = 1
+    require_model: bool = False
 
 
 @dataclass(frozen=True)
@@ -455,6 +456,7 @@ def _health_check_from_dict(raw: Any) -> HealthCheckConfig:
         timeout_seconds=_optional_number(obj, "timeout_seconds", default=2.0),
         failure_threshold=failure_threshold,
         success_threshold=success_threshold,
+        require_model=_optional_bool(obj, "require_model", default=False),
     )
 
 
@@ -511,11 +513,6 @@ def _validate_model_pools(config: FuguLocalConfig) -> None:
         if pool.health.success_threshold <= 0:
             raise ConfigError(
                 f"health.success_threshold must be positive for model_pool '{pool.name}'"
-            )
-        if pool.health.enabled and pool.backend != "ollama":
-            raise ConfigError(
-                f"active health probes currently support only the ollama backend; "
-                f"model_pool '{pool.name}' uses '{pool.backend}'"
             )
 
 

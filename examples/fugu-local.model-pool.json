@@ -16,7 +16,8 @@
         "interval_seconds": 30,
         "timeout_seconds": 2,
         "failure_threshold": 2,
-        "success_threshold": 1
+        "success_threshold": 1,
+        "require_model": false
       }
     }
   ],
