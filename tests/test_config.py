@@ -252,6 +252,60 @@ class RequestTimeoutConfigTests(unittest.TestCase):
             )
 
 
+class ServerQueueConfigTests(unittest.TestCase):
+    def _base(self, server=None):
+        raw = {
+            "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+            "roles": [{"name": "planner", "model": "m"}],
+        }
+        if server is not None:
+            raw["server"] = server
+        return raw
+
+    def test_queue_defaults_disabled(self):
+        config = config_from_dict(self._base())
+
+        self.assertFalse(config.server.queue.enabled)
+        self.assertEqual(config.server.queue.max_size, 16)
+        self.assertEqual(config.server.queue.timeout_seconds, 30.0)
+
+    def test_accepts_bounded_queue_config(self):
+        config = config_from_dict(
+            self._base(
+                {
+                    "queue": {
+                        "enabled": True,
+                        "max_size": 3,
+                        "timeout_seconds": 1.5,
+                    }
+                }
+            )
+        )
+
+        self.assertTrue(config.server.queue.enabled)
+        self.assertEqual(config.server.queue.max_size, 3)
+        self.assertEqual(config.server.queue.timeout_seconds, 1.5)
+
+    def test_rejects_non_positive_queue_values(self):
+        for field, value in (("max_size", 0), ("timeout_seconds", 0)):
+            with self.subTest(field=field):
+                with self.assertRaises(ConfigError):
+                    config_from_dict(
+                        self._base(
+                            {
+                                "queue": {
+                                    "enabled": True,
+                                    field: value,
+                                }
+                            }
+                        )
+                    )
+
+    def test_rejects_boolean_queue_size(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(self._base({"queue": {"enabled": True, "max_size": True}}))
+
+
 class ModelPoolConfigTests(unittest.TestCase):
     def _with_pool(self, pool):
         return {

@@ -115,6 +115,18 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"fugu-local","messages":[{"role":"user","content":"実装計画を作って"}],"temperature":0.2}'
 ```
 
+同時処理の上限を超えたリクエストは既定で即 HTTP 429 になります。任意で bounded queue を有効にすると、空きスロットができるまで `server.queue.timeout_seconds` の範囲で待機してから 429 を返せます（既定は無効）。
+
+```json
+{
+  "server": {
+    "queue": {"enabled": true, "max_size": 16, "timeout_seconds": 30}
+  }
+}
+```
+
+キューが満杯の場合や待機がタイムアウトした場合は 429 を返します。現在のキュー長は `/health` の `queue` に表示されます。
+
 ---
 
 ## 設定リファレンス
@@ -264,7 +276,7 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 - `/health` は model pool endpoint の state、busy、failures、cooldown remaining、最終 probe/success/failure 時刻を返します。URL の credentials・query・fragment は出力しません。
 - role は `models[].name` でも `model_pools[].name` でも参照可能（名前空間は一意）。
 - サンプル: `examples/fugu-local.model-pool.json`。
-- OpenAI-compatible endpoint の能動 probe、動的発見、HTTP queue はまだ未実装です。
+- OpenAI-compatible endpoint の能動 probe、動的発見はまだ未実装です。bounded HTTP queue は `server.queue` で有効化できます。
 
 例:
 
@@ -438,7 +450,7 @@ python3 -m coverage report --fail-under=80
 |---|---|---|---|
 | HTTP server-side tool execution | HTTP の明示 `tool_calls` 実行は対応済み。backend に tool call を生成させる pass-through は未実装 | 次にやるなら assistant tool proposal / backend pass-through | [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md) |
 | true token streaming | `stream:true` は buffered SSE。生成後に chunk 化する | まず `direct` pattern の単一 backend call だけ token streaming。role_split は worker 完了後の synthesizer streaming を後続にする | [true-token-streaming.md](docs/design/true-token-streaming.md) |
-| active health polling / queue | failover、passive cooldown、Ollama `/api/tags` active probe は実装済み。OpenAI-compatible probe / queue は未実装 | bounded HTTP queue、続いて OpenAI-compatible `/v1/models` probe を追加 | [active-health-queue.md](docs/design/active-health-queue.md) |
+| active health polling / queue | failover、passive cooldown、Ollama `/api/tags` active probe、bounded HTTP queue は実装済み。OpenAI-compatible probe は未実装 | OpenAI-compatible `/v1/models` probe を追加 | [active-health-queue.md](docs/design/active-health-queue.md) |
 
 判断目安:
 

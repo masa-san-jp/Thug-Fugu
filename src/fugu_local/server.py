@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import queue
 import re
 import threading
 import time
@@ -38,6 +39,11 @@ class FuguLocalHTTPServer(ThreadingHTTPServer):
         self.orchestrator = orchestrator
         self.max_concurrent_requests = max_concurrent_requests
         self._request_semaphore = threading.BoundedSemaphore(max_concurrent_requests)
+        queue_config = orchestrator.config.server.queue
+        self.request_queue_enabled = queue_config.enabled
+        self.request_queue_max_size = queue_config.max_size
+        self.request_queue_timeout_seconds = queue_config.timeout_seconds
+        self._request_queue: queue.Queue[object] = queue.Queue(maxsize=self.request_queue_max_size)
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         self.orchestrator.start_health_monitor()
@@ -50,11 +56,38 @@ class FuguLocalHTTPServer(ThreadingHTTPServer):
         self.orchestrator.stop_health_monitor()
         super().server_close()
 
-    def try_acquire_request_slot(self) -> bool:
-        return self._request_semaphore.acquire(blocking=False)
+    def acquire_request_slot(self) -> bool:
+        if self._request_semaphore.acquire(blocking=False):
+            return True
+        if not self.request_queue_enabled:
+            return False
+
+        ticket = object()
+        try:
+            self._request_queue.put_nowait(ticket)
+        except queue.Full:
+            return False
+
+        try:
+            return self._request_semaphore.acquire(timeout=self.request_queue_timeout_seconds)
+        finally:
+            try:
+                self._request_queue.get_nowait()
+            except queue.Empty:
+                pass
+            else:
+                self._request_queue.task_done()
 
     def release_request_slot(self) -> None:
         self._request_semaphore.release()
+
+    def queue_snapshot(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.request_queue_enabled,
+            "size": self._request_queue.qsize(),
+            "max_size": self.request_queue_max_size,
+            "timeout_seconds": self.request_queue_timeout_seconds,
+        }
 
 
 class FuguLocalHandler(BaseHTTPRequestHandler):
@@ -70,6 +103,7 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                     "roles": [role.name for role in self.server.orchestrator.roles],
                     "max_concurrent_requests": self.server.max_concurrent_requests,
                     "model_pools": self.server.orchestrator.model_pool_health(),
+                    "queue": self.server.queue_snapshot(),
                 },
             )
             return
@@ -83,7 +117,7 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
             self._write_json(404, {"error": {"message": "not found"}})
             return
 
-        if not self.server.try_acquire_request_slot():
+        if not self.server.acquire_request_slot():
             self._write_json(429, {"error": {"message": "too many concurrent requests"}})
             return
 
