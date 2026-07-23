@@ -608,6 +608,10 @@ class CoordinatorDispatchTests(unittest.TestCase):
 
         self.assertIsNotNone(prepared)
         self.assertEqual(prepared.pattern, "role_split")
+        self.assertEqual(
+            prepared.progress,
+            {"phase": "workers_done", "ok": 2, "failed": 0},
+        )
         self.assertEqual(len(planner.calls), 1)
         self.assertEqual(len(coder.calls), 1)
         self.assertEqual(synth.stream_calls, [])

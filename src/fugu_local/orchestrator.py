@@ -82,6 +82,7 @@ class PreparedStream:
     pattern: str
     fallback_content: Optional[str] = None
     fallback_usage: Optional[TokenUsage] = None
+    progress: Optional[dict] = None
 
 
 class FuguLocalOrchestrator:
@@ -408,11 +409,17 @@ class FuguLocalOrchestrator:
             synth_router.stream_chat(request),
             worker_results,
         )
+        ok_count = sum(1 for result in worker_results if result.ok)
         return PreparedStream(
             chunks=chunks,
             pattern="role_split",
             fallback_content=_deterministic_merge(worker_results),
             fallback_usage=worker_usage,
+            progress={
+                "phase": "workers_done",
+                "ok": ok_count,
+                "failed": len(worker_results) - ok_count,
+            },
         )
 
     def _run_role_split(

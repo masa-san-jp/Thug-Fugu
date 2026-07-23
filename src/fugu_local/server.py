@@ -153,6 +153,10 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                                 content=prepared_stream.fallback_content,
                                 usage=prepared_stream.fallback_usage,
                                 include_usage=_stream_include_usage(body),
+                                progress=_requested_progress(
+                                    body,
+                                    prepared_stream.progress,
+                                ),
                             )
                             return
                         prepared_stream = None
@@ -163,6 +167,10 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                                 content=prepared_stream.fallback_content,
                                 usage=prepared_stream.fallback_usage,
                                 include_usage=_stream_include_usage(body),
+                                progress=_requested_progress(
+                                    body,
+                                    prepared_stream.progress,
+                                ),
                             )
                             return
                         raise OrchestrationError(
@@ -174,6 +182,10 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                             first_chunk=first_chunk,
                             remaining_chunks=prepared_stream.chunks,
                             include_usage=_stream_include_usage(body),
+                            progress=_requested_progress(
+                                body,
+                                prepared_stream.progress,
+                            ),
                         )
                         return
 
@@ -265,6 +277,7 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         content: str,
         usage: Optional[TokenUsage] = None,
         include_usage: bool = False,
+        progress: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.send_response(200)
         self.send_header("content-type", "text/event-stream; charset=utf-8")
@@ -275,6 +288,7 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
             content=content,
             usage=usage,
             include_usage=include_usage,
+            progress=progress,
         ):
             self.wfile.write(event)
         self.wfile.flush()
@@ -286,6 +300,7 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         first_chunk: ChatStreamChunk,
         remaining_chunks: Iterable[ChatStreamChunk],
         include_usage: bool,
+        progress: Optional[Dict[str, Any]] = None,
     ) -> None:
         created = int(time.time())
         completion_id = f"chatcmpl-local-{created}"
@@ -297,6 +312,8 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         usage: Optional[TokenUsage] = None
         finish_emitted = False
         try:
+            if progress is not None:
+                self._write_sse_named_event("fugu_progress", progress)
             self._write_sse_chunk(
                 _chat_completion_chunk(
                     completion_id=completion_id,
@@ -369,6 +386,13 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
 
     def _write_sse_chunk(self, payload: Dict[str, Any]) -> None:
         event = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+        self.wfile.write(event)
+        self.wfile.flush()
+
+    def _write_sse_named_event(self, event_name: str, payload: Dict[str, Any]) -> None:
+        event = (
+            f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        ).encode("utf-8")
         self.wfile.write(event)
         self.wfile.flush()
 
@@ -453,11 +477,25 @@ def _validate_stream_options(body: Dict[str, Any]) -> None:
         raise ValueError("stream_options must be an object when provided")
     if "include_usage" in options and not isinstance(options["include_usage"], bool):
         raise ValueError("stream_options.include_usage must be a boolean when provided")
+    if "include_progress" in options and not isinstance(options["include_progress"], bool):
+        raise ValueError("stream_options.include_progress must be a boolean when provided")
 
 
 def _stream_include_usage(body: Dict[str, Any]) -> bool:
     options = body.get("stream_options")
     return isinstance(options, dict) and options.get("include_usage") is True
+
+
+def _stream_include_progress(body: Dict[str, Any]) -> bool:
+    options = body.get("stream_options")
+    return isinstance(options, dict) and options.get("include_progress") is True
+
+
+def _requested_progress(
+    body: Dict[str, Any],
+    progress: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    return progress if _stream_include_progress(body) else None
 
 
 def _validate_tool_calling_request(body: Dict[str, Any], tool_calling) -> None:
@@ -601,6 +639,7 @@ def _chat_completion_stream_events(
     content: str,
     usage: Optional[TokenUsage] = None,
     include_usage: bool = False,
+    progress: Optional[Dict[str, Any]] = None,
 ) -> list:
     created = int(time.time())
     completion_id = f"chatcmpl-local-{created}"
@@ -644,9 +683,16 @@ def _chat_completion_stream_events(
                 choices=[],
             )
         )
-    events = [
+    events = []
+    if progress is not None:
+        events.append(
+            (f"event: fugu_progress\ndata: {json.dumps(progress, ensure_ascii=False)}\n\n").encode(
+                "utf-8"
+            )
+        )
+    events.extend(
         f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8") for chunk in chunks
-    ]
+    )
     events.append(b"data: [DONE]\n\n")
     return events
 

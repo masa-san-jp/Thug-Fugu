@@ -20,7 +20,7 @@ but does not improve perceived latency.
 - `stream_options.include_usage=true` can emit a final usage chunk.
 - Ollama, OpenAI-compatible, and echo adapters implement `stream_chat`.
 
-Status: Phases 1 and 2 are implemented.
+Status: Phases 1 through 3 are implemented.
 
 ## 3. Goals
 
@@ -100,6 +100,17 @@ data: {"phase":"workers_done","ok":2,"failed":0}
 ```
 
 This should be opt-in because not all OpenAI clients accept custom SSE events.
+
+Status: implemented. Clients opt in with
+`stream_options.include_progress=true`. Eligible `role_split` streams emit:
+
+```text
+event: fugu_progress
+data: {"phase":"workers_done","ok":2,"failed":0}
+```
+
+before the assistant role/content chunks. Direct streams and requests without
+the option do not emit custom events.
 
 ## 7. Backend support
 
