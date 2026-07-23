@@ -389,7 +389,7 @@ class ServerTests(unittest.TestCase):
             {
                 "messages": [{"role": "user", "content": "hello"}],
                 "stream": True,
-                "stream_options": {"include_usage": True},
+                "stream_options": {"include_usage": True, "include_progress": True},
             }
         )
         try:
@@ -432,6 +432,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(chunks[-1]["choices"], [])
         self.assertEqual(chunks[-1]["usage"]["total_tokens"], 5)
         self.assertTrue(backend.completed.is_set())
+        self.assertNotIn("fugu_progress", raw)
 
     def test_direct_stream_failure_before_headers_returns_json(self):
         backend = ControlledStreamingBackend(fail_before=True)
@@ -524,6 +525,35 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(chunks[-1]["usage"]["prompt_tokens"], 15)
         self.assertEqual(chunks[-1]["usage"]["completion_tokens"], 20)
         self.assertEqual(chunks[-1]["usage"]["total_tokens"], 35)
+        self.assertNotIn("fugu_progress", raw)
+
+    def test_role_split_progress_event_is_opt_in(self):
+        synthesizer = ControlledStreamingBackend()
+        synthesizer.release.set()
+        server, thread, base_url = self._start_role_split_stream_server(synthesizer)
+        try:
+            status, headers, raw = self._post_chat_raw_to(
+                base_url,
+                {
+                    "messages": [{"role": "user", "content": "complex task"}],
+                    "stream": True,
+                    "stream_options": {"include_progress": True},
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        text = raw.decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", headers["content-type"])
+        self.assertIn("event: fugu_progress", text)
+        self.assertIn(
+            'data: {"phase": "workers_done", "ok": 1, "failed": 0}',
+            text,
+        )
+        self.assertLess(text.index("event: fugu_progress"), text.index('"content": "first"'))
 
     def test_role_split_synth_stream_failure_before_headers_uses_worker_fallback(self):
         synthesizer = ControlledStreamingBackend(fail_before=True)
@@ -605,6 +635,18 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(status, 400)
         self.assertIn("include_usage", body["error"]["message"])
+
+    def test_rejects_invalid_stream_options_include_progress(self):
+        status, body = self._post_chat(
+            {
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+                "stream_options": {"include_progress": "true"},
+            }
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("include_progress", body["error"]["message"])
 
     def test_rejects_tool_calling_requests(self):
         status, body = self._post_chat(

@@ -440,6 +440,7 @@ python3 -m coverage report --fail-under=80
 - tool calling は allow-listed ローカル実行に対応しています。HTTP では request 側の明示 `tool_calls` を実行できますが、バックエンドへの tool pass-through / backend-generated tool call の自動実行はまだ行いません。設計方針は [tool-calling-support.md](docs/design/tool-calling-support.md) を参照してください。
 - 適応コーディネーターは recursive coordination は持ちません。Verifier retry loop は `role_split` の任意機能として提供します。
 - `/v1/chat/completions` は最小対応です。`stream: true` は coordinator の `direct` pattern では backend delta を、`role_split` では worker 完了後の synthesizer delta を逐次 SSE 配信します。`parallel_ensemble` / verifier / request deadline / synthesizerなし / 非対応backendは buffered SSE にフォールバックします。対応範囲は [OpenAI 互換範囲](docs/reference/openai-compatibility.md) を参照してください。
+- `role_split` のstreamingでは `stream_options.include_progress=true` を指定すると、synthesizer出力の前に `event: fugu_progress`（`workers_done`、成功/失敗worker数）を送信します。OpenAI標準外の拡張のため既定は無効です。
 - GPU スケジューリングは持ちません。単一GPUの並列度調整、複数物理GPUの静的割当、複数ノード分散は設定と外部サーバー配置で扱います。
 - `usage` はバックエンドが報告した token usage を worker/synthesizer で集計します。未報告バックエンドでは互換用に `0` を返します。方針は [usage accounting 方針](docs/reference/usage-accounting.md) を参照してください。
 
@@ -450,7 +451,7 @@ python3 -m coverage report --fail-under=80
 | 項目 | 現状 | 実装するなら最初の切り方 | 設計書 |
 |---|---|---|---|
 | HTTP server-side tool execution | HTTP の明示 `tool_calls` 実行は対応済み。backend に tool call を生成させる pass-through は未実装 | 次にやるなら assistant tool proposal / backend pass-through | [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md) |
-| true token streaming | `direct` backend delta と `role_split` の worker完了後の synthesizer deltaを逐次配信。ensemble等はbuffered fallback | 任意の進捗eventが必要ならPhase 3として追加 | [true-token-streaming.md](docs/design/true-token-streaming.md) |
+| true token streaming | `direct` backend delta、`role_split` synthesizer delta、opt-in progress eventを実装済み。ensemble等はbuffered fallback | 複数workerのinterleave等が必要なら別設計へ分離 | [true-token-streaming.md](docs/design/true-token-streaming.md) |
 | active health polling / queue | failover、passive cooldown、Ollama `/api/tags` / OpenAI-compatible `/v1/models` active probe、strict model presence、bounded HTTP queue は実装済み | 動的 endpoint 発見や高度な scheduler が必要なら別設計へ分離 | [active-health-queue.md](docs/design/active-health-queue.md) |
 
 判断目安:
