@@ -138,25 +138,41 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
             temperature = _optional_temperature(body.get("temperature"))
             max_tokens = _optional_max_tokens(body.get("max_tokens"))
             if body.get("stream") is True:
-                direct_stream = self.server.orchestrator.stream_direct_if_available(
+                prepared_stream = self.server.orchestrator.prepare_streaming_response(
                     messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-                if direct_stream is not None:
+                if prepared_stream is not None:
                     try:
-                        first_chunk = next(direct_stream)
+                        first_chunk = next(prepared_stream.chunks)
                     except StopIteration:
-                        direct_stream = None
+                        if prepared_stream.fallback_content is not None:
+                            self._write_chat_completion_stream(
+                                model=model,
+                                content=prepared_stream.fallback_content,
+                                usage=prepared_stream.fallback_usage,
+                                include_usage=_stream_include_usage(body),
+                            )
+                            return
+                        prepared_stream = None
                     except Exception as exc:
+                        if prepared_stream.fallback_content is not None:
+                            self._write_chat_completion_stream(
+                                model=model,
+                                content=prepared_stream.fallback_content,
+                                usage=prepared_stream.fallback_usage,
+                                include_usage=_stream_include_usage(body),
+                            )
+                            return
                         raise OrchestrationError(
                             "streaming backend failed before response"
                         ) from exc
-                    if direct_stream is not None:
+                    if prepared_stream is not None:
                         self._write_direct_chat_completion_stream(
                             model=model,
                             first_chunk=first_chunk,
-                            remaining_chunks=direct_stream,
+                            remaining_chunks=prepared_stream.chunks,
                             include_usage=_stream_include_usage(body),
                         )
                         return

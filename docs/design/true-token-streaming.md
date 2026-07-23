@@ -14,12 +14,13 @@ but does not improve perceived latency.
 - `stream=true` returns OpenAI-style SSE.
 - `direct` pattern streams backend deltas incrementally when every router member
   supports streaming.
-- `role_split`, `parallel_ensemble`, verifier-enabled requests, request-deadline
-  requests, and unsupported backends use buffered SSE fallback.
+- `role_split` runs workers to completion and then streams synthesizer deltas.
+- `parallel_ensemble`, verifier-enabled requests, request-deadline requests,
+  missing/unsupported synthesizers, and unsupported backends use buffered SSE.
 - `stream_options.include_usage=true` can emit a final usage chunk.
 - Ollama, OpenAI-compatible, and echo adapters implement `stream_chat`.
 
-Status: Phase 1 is implemented.
+Status: Phases 1 and 2 are implemented.
 
 ## 3. Goals
 
@@ -83,6 +84,11 @@ For `role_split`:
 
 This reduces perceived latency for long final answers, while keeping worker
 fan-out deterministic.
+
+Status: implemented. Streaming eligibility is checked before workers run.
+Worker usage is aggregated with the final synthesizer usage chunk. If the
+synthesizer fails before the first chunk, the server emits the deterministic
+worker merge through the buffered SSE fallback without rerunning workers.
 
 ### Phase 3: progress events
 
