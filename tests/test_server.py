@@ -48,6 +48,7 @@ class ControlledStreamingBackend:
         self.release = threading.Event()
         self.completed = threading.Event()
         self.stream_calls = 0
+        self.stream_requests = []
         self.chat_calls = 0
 
     def chat(self, request):
@@ -56,6 +57,7 @@ class ControlledStreamingBackend:
 
     def stream_chat(self, request):
         self.stream_calls += 1
+        self.stream_requests.append(request)
         if self.fail_before:
             raise RuntimeError("SECRET_PRE_HEADER_STREAM_ERROR")
         self.first_yielded.set()
@@ -128,6 +130,38 @@ class ServerTests(unittest.TestCase):
             ("127.0.0.1", 0),
             FuguLocalHandler,
             FuguLocalOrchestrator(config, backend_overrides={"m": backend}),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, thread, f"http://127.0.0.1:{server.server_port}"
+
+    def _start_role_split_stream_server(self, synthesizer_backend):
+        config = config_from_dict(
+            {
+                "models": [
+                    {"name": "worker-model", "backend": "echo", "model": "worker"},
+                    {"name": "synth-model", "backend": "echo", "model": "synth"},
+                ],
+                "roles": [
+                    {"name": "worker", "model": "worker-model", "always_include": True},
+                    {
+                        "name": "synthesizer",
+                        "model": "synth-model",
+                        "is_synthesizer": True,
+                    },
+                ],
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            FuguLocalOrchestrator(
+                config,
+                backend_overrides={
+                    "worker-model": UsageBackend(),
+                    "synth-model": synthesizer_backend,
+                },
+            ),
         )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -442,6 +476,81 @@ class ServerTests(unittest.TestCase):
         self.assertIn("streaming backend error", text)
         self.assertIn("[DONE]", text)
         self.assertNotIn("SECRET_POST_HEADER_STREAM_ERROR", text)
+
+    def test_role_split_streams_synthesizer_after_workers_complete(self):
+        synthesizer = ControlledStreamingBackend()
+        server, thread, _ = self._start_role_split_stream_server(synthesizer)
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+        payload = json.dumps(
+            {
+                "messages": [{"role": "user", "content": "complex task"}],
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
+        )
+        try:
+            connection.request(
+                "POST",
+                "/v1/chat/completions",
+                body=payload,
+                headers={"content-type": "application/json"},
+            )
+            response = connection.getresponse()
+            initial = ""
+            while '"content": "first"' not in initial:
+                line = response.readline().decode("utf-8")
+                self.assertTrue(line)
+                initial += line
+
+            self.assertEqual(response.status, 200)
+            self.assertFalse(synthesizer.completed.is_set())
+            self.assertIn("usage response", synthesizer.stream_requests[0].messages[1].content)
+
+            synthesizer.release.set()
+            raw = initial + response.read().decode("utf-8")
+        finally:
+            synthesizer.release.set()
+            connection.close()
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        events = _parse_sse_events(raw)
+        chunks = [json.loads(event) for event in events[:-1]]
+        content = "".join(
+            choice["delta"].get("content", "") for chunk in chunks for choice in chunk["choices"]
+        )
+        self.assertEqual(content, "first second")
+        self.assertEqual(chunks[-1]["usage"]["prompt_tokens"], 15)
+        self.assertEqual(chunks[-1]["usage"]["completion_tokens"], 20)
+        self.assertEqual(chunks[-1]["usage"]["total_tokens"], 35)
+
+    def test_role_split_synth_stream_failure_before_headers_uses_worker_fallback(self):
+        synthesizer = ControlledStreamingBackend(fail_before=True)
+        server, thread, base_url = self._start_role_split_stream_server(synthesizer)
+        try:
+            status, headers, raw = self._post_chat_raw_to(
+                base_url,
+                {
+                    "messages": [{"role": "user", "content": "complex task"}],
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        text = raw.decode("utf-8")
+        events = _parse_sse_events(text)
+        chunks = [json.loads(event) for event in events[:-1]]
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", headers["content-type"])
+        self.assertIn("usage response", text)
+        self.assertNotIn("SECRET_PRE_HEADER_STREAM_ERROR", text)
+        self.assertEqual(chunks[-1]["usage"]["total_tokens"], 30)
+        self.assertEqual(synthesizer.chat_calls, 0)
 
     def test_role_split_streaming_uses_buffered_fallback(self):
         backend = ControlledStreamingBackend()

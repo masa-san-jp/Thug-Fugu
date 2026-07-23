@@ -76,6 +76,14 @@ class OrchestrationResult:
     usage_is_estimate: bool = False
 
 
+@dataclass(frozen=True)
+class PreparedStream:
+    chunks: Iterator[ChatStreamChunk]
+    pattern: str
+    fallback_content: Optional[str] = None
+    fallback_usage: Optional[TokenUsage] = None
+
+
 class FuguLocalOrchestrator:
     """Coordinate multiple local LLM roles and synthesize their outputs."""
 
@@ -275,6 +283,38 @@ class FuguLocalOrchestrator:
     ) -> Optional[Iterator[ChatStreamChunk]]:
         """Return a direct backend stream when the current request is eligible."""
 
+        prepared = self._prepare_stream(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            allowed_patterns={"direct"},
+        )
+        return prepared.chunks if prepared is not None else None
+
+    def prepare_streaming_response(
+        self,
+        messages: List[ChatMessage],
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Optional[PreparedStream]:
+        """Prepare direct or role-split synthesis streaming when eligible."""
+
+        return self._prepare_stream(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            allowed_patterns={"direct", "role_split"},
+        )
+
+    def _prepare_stream(
+        self,
+        messages: List[ChatMessage],
+        *,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        allowed_patterns: set,
+    ) -> Optional[PreparedStream]:
         if not messages:
             raise OrchestrationError("At least one message is required")
         if self.config.orchestrator.request_timeout_seconds is not None:
@@ -285,9 +325,31 @@ class FuguLocalOrchestrator:
         user_text = _latest_user_message_text(messages)
         plan = self._coordinator.plan(user_text) if self._coordinator else None
         pattern = plan.pattern if plan else "role_split"
-        if pattern != "direct":
+        if pattern not in allowed_patterns:
             return None
 
+        if pattern == "direct":
+            return self._prepare_direct_stream(
+                messages,
+                user_text,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        return self._prepare_role_split_stream(
+            messages,
+            user_text,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    def _prepare_direct_stream(
+        self,
+        messages: List[ChatMessage],
+        user_text: str,
+        *,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> Optional[PreparedStream]:
         selected = self._select_worker_roles(self._worker_roles(), user_text)
         if not selected:
             raise OrchestrationError("No worker roles are configured")
@@ -302,7 +364,56 @@ class FuguLocalOrchestrator:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        return router.stream_chat(request)
+        return PreparedStream(chunks=router.stream_chat(request), pattern="direct")
+
+    def _prepare_role_split_stream(
+        self,
+        messages: List[ChatMessage],
+        user_text: str,
+        *,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> Optional[PreparedStream]:
+        synthesizer = self._select_synthesizer()
+        if synthesizer is None:
+            return None
+        synth_router = self._router_for_role(synthesizer)
+        if not synth_router.supports_streaming:
+            return None
+
+        selected_roles = self._select_worker_roles(self._worker_roles(), user_text)
+        if not selected_roles:
+            raise OrchestrationError("No worker roles are configured")
+        worker_results = self._run_workers(
+            selected_roles,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if not any(result.ok for result in worker_results):
+            errors = "; ".join(
+                f"{result.role}: {result.error}" for result in worker_results if result.error
+            )
+            raise OrchestrationError(f"All worker roles failed: {errors}")
+
+        request = self._build_synthesis_request(
+            synthesizer,
+            original_messages=messages,
+            worker_results=worker_results,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        worker_usage = _aggregate_usage(worker_results, [], None)
+        chunks = _stream_with_aggregated_usage(
+            synth_router.stream_chat(request),
+            worker_results,
+        )
+        return PreparedStream(
+            chunks=chunks,
+            pattern="role_split",
+            fallback_content=_deterministic_merge(worker_results),
+            fallback_usage=worker_usage,
+        )
 
     def _run_role_split(
         self,
@@ -749,6 +860,25 @@ class FuguLocalOrchestrator:
         temperature: Optional[float],
         max_tokens: Optional[int],
     ) -> tuple[str, Optional[TokenUsage]]:
+        request = self._build_synthesis_request(
+            role,
+            original_messages=original_messages,
+            worker_results=worker_results,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        response = self._router_for_role(role).chat(request)
+        return response.content, response.usage
+
+    def _build_synthesis_request(
+        self,
+        role: RoleConfig,
+        *,
+        original_messages: List[ChatMessage],
+        worker_results: List[WorkerResult],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> ChatRequest:
         synthesis_messages = [
             ChatMessage(
                 role="system",
@@ -771,14 +901,12 @@ class FuguLocalOrchestrator:
             ),
         ]
         router = self._router_for_role(role)
-        request = ChatRequest(
+        return ChatRequest(
             model=router.model_string,
             messages=synthesis_messages,
             temperature=self._temperature(temperature),
             max_tokens=self._max_tokens(max_tokens),
         )
-        response = router.chat(request)
-        return response.content, response.usage
 
     def _build_role_request(
         self,
@@ -859,6 +987,28 @@ def _aggregate_usage(
         total_tokens=total,
     )
     return aggregated if aggregated.known else None
+
+
+def _stream_with_aggregated_usage(
+    chunks: Iterator[ChatStreamChunk],
+    worker_results: List[WorkerResult],
+) -> Iterator[ChatStreamChunk]:
+    saw_synthesis_usage = False
+    for chunk in chunks:
+        usage = chunk.usage
+        if usage is not None:
+            saw_synthesis_usage = True
+            usage = _aggregate_usage(worker_results, [], usage)
+        yield ChatStreamChunk(
+            delta=chunk.delta,
+            finish_reason=chunk.finish_reason,
+            usage=usage,
+        )
+
+    if not saw_synthesis_usage:
+        worker_usage = _aggregate_usage(worker_results, [], None)
+        if worker_usage is not None:
+            yield ChatStreamChunk(usage=worker_usage)
 
 
 def _usage_log_record(usage: Optional[TokenUsage]) -> Optional[dict]:

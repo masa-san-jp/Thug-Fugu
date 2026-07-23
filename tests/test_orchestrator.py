@@ -580,6 +580,109 @@ class CoordinatorDispatchTests(unittest.TestCase):
         self.assertIsNone(stream)
         self.assertEqual(planner.stream_calls, [])
 
+    def test_role_split_prepares_synthesizer_stream_after_workers(self):
+        planner = StaticBackend(
+            "planner output",
+            usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+        coder = StaticBackend(
+            "coder output",
+            usage=TokenUsage(prompt_tokens=4, completion_tokens=5, total_tokens=9),
+        )
+        synth = StreamingStaticBackend(
+            "streamed synthesis",
+            usage=TokenUsage(prompt_tokens=6, completion_tokens=7, total_tokens=13),
+        )
+        orchestrator = FuguLocalOrchestrator(
+            make_config(selection_policy="all"),
+            backend_overrides={
+                "planner-model": planner,
+                "coder-model": coder,
+                "synth-model": synth,
+            },
+        )
+
+        prepared = orchestrator.prepare_streaming_response(
+            [ChatMessage(role="user", content="design and implement")]
+        )
+
+        self.assertIsNotNone(prepared)
+        self.assertEqual(prepared.pattern, "role_split")
+        self.assertEqual(len(planner.calls), 1)
+        self.assertEqual(len(coder.calls), 1)
+        self.assertEqual(synth.stream_calls, [])
+        self.assertIn("planner output", prepared.fallback_content)
+
+        chunks = list(prepared.chunks)
+        self.assertEqual("".join(chunk.delta for chunk in chunks), "streamed synthesis")
+        self.assertEqual(chunks[-1].usage.prompt_tokens, 11)
+        self.assertEqual(chunks[-1].usage.completion_tokens, 14)
+        self.assertEqual(chunks[-1].usage.total_tokens, 25)
+        self.assertIn("planner output", synth.stream_calls[0].messages[1].content)
+        self.assertIn("coder output", synth.stream_calls[0].messages[1].content)
+
+    def test_role_split_does_not_run_workers_when_synthesizer_cannot_stream(self):
+        planner = StaticBackend("planner output")
+        coder = StaticBackend("coder output")
+        orchestrator = FuguLocalOrchestrator(
+            make_config(selection_policy="all"),
+            backend_overrides={
+                "planner-model": planner,
+                "coder-model": coder,
+                "synth-model": StaticBackend("buffered synthesis"),
+            },
+        )
+
+        prepared = orchestrator.prepare_streaming_response(
+            [ChatMessage(role="user", content="design and implement")]
+        )
+
+        self.assertIsNone(prepared)
+        self.assertEqual(planner.calls, [])
+        self.assertEqual(coder.calls, [])
+
+    def test_role_split_stream_preserves_worker_usage_when_synth_usage_is_missing(self):
+        planner = StaticBackend(
+            "planner output",
+            usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+        coder = StaticBackend(
+            "coder output",
+            usage=TokenUsage(prompt_tokens=4, completion_tokens=5, total_tokens=9),
+        )
+        orchestrator = FuguLocalOrchestrator(
+            make_config(selection_policy="all"),
+            backend_overrides={
+                "planner-model": planner,
+                "coder-model": coder,
+                "synth-model": StreamingStaticBackend("streamed synthesis"),
+            },
+        )
+
+        prepared = orchestrator.prepare_streaming_response(
+            [ChatMessage(role="user", content="design and implement")]
+        )
+        chunks = list(prepared.chunks)
+
+        self.assertEqual(chunks[-1].usage.prompt_tokens, 5)
+        self.assertEqual(chunks[-1].usage.completion_tokens, 7)
+        self.assertEqual(chunks[-1].usage.total_tokens, 12)
+
+    def test_role_split_streaming_raises_when_all_workers_fail(self):
+        orchestrator = FuguLocalOrchestrator(
+            make_config(selection_policy="all"),
+            backend_overrides={
+                "planner-model": FailingBackend(),
+                "coder-model": FailingBackend(),
+                "synth-model": StreamingStaticBackend("unused"),
+            },
+        )
+
+        with self.assertRaises(OrchestrationError):
+            orchestrator.prepare_streaming_response(
+                [ChatMessage(role="user", content="design and implement")]
+            )
+
     def test_parallel_ensemble_majority_vote(self):
         config = make_coordinator_config(
             {
