@@ -137,7 +137,9 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
             model = body.get("model") or "fugu-local"
             temperature = _optional_temperature(body.get("temperature"))
             max_tokens = _optional_max_tokens(body.get("max_tokens"))
-            if body.get("stream") is True:
+            backend_tool_choice = body.get("tool_choice", "auto")
+            backend_tools = body.get("tools") if backend_tool_choice != "none" else None
+            if body.get("stream") is True and not backend_tools:
                 prepared_stream = self.server.orchestrator.prepare_streaming_response(
                     messages,
                     temperature=temperature,
@@ -189,11 +191,22 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                         )
                         return
 
-            result = self.server.orchestrator.chat(
-                messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            if backend_tools:
+                result = self.server.orchestrator.chat_with_backend_tools(
+                    messages,
+                    tools=backend_tools,
+                    tool_choice=backend_tool_choice,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            else:
+                result = self.server.orchestrator.chat(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+
+            all_tool_results = tool_results + list(result.tool_results)
 
             if body.get("stream") is True:
                 self._write_chat_completion_stream(
@@ -201,6 +214,8 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                     content=result.content,
                     usage=result.usage,
                     include_usage=_stream_include_usage(body),
+                    tool_calls=result.tool_calls,
+                    finish_reason=result.finish_reason,
                 )
             else:
                 self._write_json(
@@ -209,7 +224,9 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
                         model=model,
                         content=result.content,
                         usage=result.usage,
-                        thug_fugu=_thug_fugu_metadata(tool_results),
+                        thug_fugu=_thug_fugu_metadata(all_tool_results),
+                        tool_calls=result.tool_calls,
+                        finish_reason=result.finish_reason,
                     ),
                 )
         except RequestTooLargeError as exc:
@@ -278,6 +295,8 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
         usage: Optional[TokenUsage] = None,
         include_usage: bool = False,
         progress: Optional[Dict[str, Any]] = None,
+        tool_calls: Optional[list[dict]] = None,
+        finish_reason: Optional[str] = None,
     ) -> None:
         self.send_response(200)
         self.send_header("content-type", "text/event-stream; charset=utf-8")
@@ -289,6 +308,8 @@ class FuguLocalHandler(BaseHTTPRequestHandler):
             usage=usage,
             include_usage=include_usage,
             progress=progress,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
         ):
             self.wfile.write(event)
         self.wfile.flush()
@@ -502,6 +523,7 @@ def _validate_tool_calling_request(body: Dict[str, Any], tool_calling) -> None:
     if tool_calling is None or not getattr(tool_calling, "enabled", False):
         raise ValueError("tool calling is not enabled")
 
+    tool_names = set()
     if "tools" in body:
         tools = body["tools"]
         if not isinstance(tools, list) or not tools:
@@ -520,6 +542,7 @@ def _validate_tool_calling_request(body: Dict[str, Any], tool_calling) -> None:
                     f"tool at index {index} has an invalid function name; "
                     "must match ^[A-Za-z0-9_-]{1,64}$"
                 )
+            tool_names.add(name)
             if "description" in function and not isinstance(function["description"], str):
                 raise ValueError(f"tool at index {index} description must be a string")
             if "parameters" in function and not isinstance(function["parameters"], dict):
@@ -529,20 +552,18 @@ def _validate_tool_calling_request(body: Dict[str, Any], tool_calling) -> None:
     if isinstance(tool_choice, str):
         if tool_choice not in ("none", "auto", "required"):
             raise ValueError("tool_choice string must be one of: none, auto, required")
-        if tool_choice == "required":
-            raise ValueError(
-                "tool_choice='required' is not supported yet; this build accepts tool schemas "
-                "in shape-only mode but does not force or execute tool calls"
-            )
+        if tool_choice == "required" and not tool_names:
+            raise ValueError("tool_choice='required' requires a non-empty tools list")
     elif isinstance(tool_choice, dict):
         if tool_choice.get("type") != "function" or not isinstance(
             tool_choice.get("function"), dict
         ):
             raise ValueError("named tool_choice must be {'type':'function','function':{...}}")
-        raise ValueError(
-            "named tool_choice is not supported yet; this build accepts tool schemas in "
-            "shape-only mode but does not force or execute tool calls"
-        )
+        name = tool_choice["function"].get("name")
+        if not isinstance(name, str) or not _TOOL_NAME_PATTERN.match(name):
+            raise ValueError("named tool_choice function.name is invalid")
+        if name not in tool_names:
+            raise ValueError("named tool_choice must reference a function in tools")
     else:
         raise ValueError("tool_choice must be a string or an object when provided")
 
@@ -640,6 +661,8 @@ def _chat_completion_stream_events(
     usage: Optional[TokenUsage] = None,
     include_usage: bool = False,
     progress: Optional[Dict[str, Any]] = None,
+    tool_calls: Optional[list[dict]] = None,
+    finish_reason: Optional[str] = None,
 ) -> list:
     created = int(time.time())
     completion_id = f"chatcmpl-local-{created}"
@@ -652,7 +675,17 @@ def _chat_completion_stream_events(
             finish_reason=None,
         )
     ]
-    if content:
+    if tool_calls:
+        chunks.append(
+            _chat_completion_chunk(
+                completion_id=completion_id,
+                created=created,
+                model=model,
+                delta={"tool_calls": _stream_tool_calls(tool_calls)},
+                finish_reason=None,
+            )
+        )
+    elif content:
         chunks.append(
             _chat_completion_chunk(
                 completion_id=completion_id,
@@ -668,7 +701,7 @@ def _chat_completion_stream_events(
             created=created,
             model=model,
             delta={},
-            finish_reason="stop",
+            finish_reason=finish_reason or ("tool_calls" if tool_calls else "stop"),
         )
     )
     if include_usage:
@@ -710,7 +743,7 @@ def _chat_completion_chunk(
     completion_id: str,
     created: int,
     model: str,
-    delta: Dict[str, str],
+    delta: Dict[str, Any],
     finish_reason: Optional[str],
     usage: Optional[TokenUsage] = None,
     choices: Optional[list] = None,
@@ -742,8 +775,16 @@ def _chat_completion_response(
     content: str,
     usage: Optional[TokenUsage] = None,
     thug_fugu: Optional[Dict[str, Any]] = None,
+    tool_calls: Optional[list[dict]] = None,
+    finish_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     created = int(time.time())
+    message: Dict[str, Any] = {
+        "role": "assistant",
+        "content": None if tool_calls else content,
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
     payload = {
         "id": f"chatcmpl-local-{created}",
         "object": "chat.completion",
@@ -752,8 +793,8 @@ def _chat_completion_response(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
+                "message": message,
+                "finish_reason": finish_reason or ("tool_calls" if tool_calls else "stop"),
             }
         ],
         "usage": _usage_to_openai_dict(usage),
@@ -761,6 +802,18 @@ def _chat_completion_response(
     if thug_fugu:
         payload["thug_fugu"] = thug_fugu
     return payload
+
+
+def _stream_tool_calls(tool_calls: list[dict]) -> list[dict]:
+    return [
+        {
+            "index": index,
+            "id": call["id"],
+            "type": "function",
+            "function": dict(call["function"]),
+        }
+        for index, call in enumerate(tool_calls)
+    ]
 
 
 def _thug_fugu_metadata(tool_results: list[ToolResult]) -> Optional[Dict[str, Any]]:

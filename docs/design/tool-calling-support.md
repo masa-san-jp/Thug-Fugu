@@ -1,7 +1,9 @@
 # Tool calling support design
 
-Status: draft design. Implementation intentionally deferred until this behavior is
-reviewed. Tracks issue #8.
+Status: implemented for shape validation, explicit client-provided tool calls,
+backend-generated synthesizer proposals, and one-round allow-listed execution.
+Multi-round autonomous loops and worker-side tools remain intentionally
+unsupported. Tracks issue #8.
 
 ## 1. Goal
 
@@ -100,7 +102,10 @@ This phase is useful for clients that execute tools themselves.
 
 ### Phase B: local allow-listed execution
 
-> Status: implemented for `consult(config, prompt, tool_calls=[...])`, the MCP `consult_thug_fugu` tool, and HTTP `/v1/chat/completions` when the client provides explicit `tool_calls`. Backend tool-call pass-through / backend-generated tool proposals remain future work.
+> Status: implemented for `consult(config, prompt, tool_calls=[...])`, the MCP
+> `consult_thug_fugu` tool, explicit HTTP `tool_calls`, and one backend-generated
+> synthesizer tool round. OpenAI-compatible backends receive `tools` and
+> `tool_choice`; native Ollama receives `tools`.
 
 - Execute only registered local tools whose names appear in `allowed_tools`.
 - Tool registry is process-local Python code, not user-supplied shell.
@@ -139,27 +144,25 @@ This phase is useful for clients that execute tools themselves.
 
 ### Tool result representation inside orchestration
 
-Future HTTP server-side execution should represent tool results internally as
-messages:
+A richer future representation could use native tool messages:
 
 ```json
 {"role": "tool", "tool_call_id": "call_local_...", "content": "..."}
 ```
 
-Current consult/MCP execution injects structured tool evidence as a follow-up user
-message for re-synthesis. Before HTTP server-side execution is added,
-`messages_from_dicts()` should be extended to preserve `tool_call_id` or a richer
-message type should be introduced. Do not overload `ChatMessage.content` with
-unstructured tool metadata in that future HTTP path.
+Current consult/MCP/HTTP execution injects structured, clearly framed tool
+evidence as a follow-up user message for re-synthesis. Native `tool` role
+messages remain a possible compatibility improvement.
 
 ## 7. Streaming behavior
 
-Current streaming is buffered SSE. Tool calling should preserve this initially:
+Tool-calling requests use buffered SSE:
 
 - If the final result is a tool proposal, emit buffered SSE chunks containing the
   `tool_calls` delta and finish with `finish_reason: "tool_calls"`.
 - Do not interleave live tool execution events in the first implementation.
-- Token-by-token backend streaming remains a separate future enhancement.
+- Direct/synthesizer token streaming remains disabled for requests carrying
+  backend tool schemas so tool proposals and execution remain deterministic.
 
 ## 8. Safety boundaries
 

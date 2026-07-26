@@ -22,8 +22,8 @@ GET  /v1/models
 | `stream` | Partial | `false`/omitted returns JSON. `true` returns OpenAI-style SSE. Eligible `direct` requests stream backend deltas; eligible `role_split` requests stream synthesizer deltas after workers complete. Other paths use buffered fallback. |
 | `stream_options.include_usage` | Partial | When `stream=true` and `include_usage=true`, emits a final usage chunk before `[DONE]`. Usage is backend-reported/aggregated when known, otherwise `0/0/0`. |
 | `stream_options.include_progress` | Extension | When `stream=true`, `true` may emit `event: fugu_progress` before role-split synthesizer content. Disabled by default and not part of the OpenAI API. |
-| `tools` | Shape-only | Rejected with 400 unless `tool_calling.enabled=true`. When enabled, tool schemas are validated and accepted, but tools are not yet forwarded to backends or executed. See `docs/design/tool-calling-support.md`. |
-| `tool_choice` | Partial | `none`/`auto` accepted when tool calling is enabled. `required` and named function choice return 400 (not supported in shape-only mode). |
+| `tools` | Partial | Rejected with 400 unless `tool_calling.enabled=true`. In `synthesizer_only` mode schemas are forwarded to the synthesizer backend. Generated calls can be returned as proposals or executed once when `execute=true`. |
+| `tool_choice` | Partial | `none`/`auto`/`required` and named choices are accepted with validated schemas. OpenAI-compatible backends receive the value; native Ollama receives `tools` only. |
 | `tool_calls` | Extension | Non-OpenAI request extension. When `tool_calling.enabled=true` and `execute=true`, explicit client-provided tool calls are executed against the local allow-list and injected as evidence before synthesis. |
 
 ## Supported response fields
@@ -80,8 +80,9 @@ The current minimal API does not attempt full OpenAI compatibility. In particula
 - For eligible `role_split`, workers finish first and the synthesizer output then streams incrementally. Worker usage is aggregated with synthesizer usage.
 - `stream_options.include_progress=true` is a Thug-Fugu extension. Eligible `role_split` streams emit a `fugu_progress` event containing `phase: workers_done` and non-sensitive worker success/failure counts before synthesizer content.
 - `parallel_ensemble`, verifier-enabled requests, request-deadline requests, missing/non-streaming synthesizers, and unsupported/mixed model pools retain buffered SSE. `stream_options.include_usage=true` emits the final available usage chunk in all paths.
-- Backend-generated tool calling is not supported yet: tool schemas are validated, and explicit request `tool_calls` can execute locally, but tools are not forwarded to backends for automatic tool-call generation (see `docs/design/tool-calling-support.md`)
-- No function calling
+- Backend-generated tool calling is limited to the configured synthesizer and
+  one execution round. A second generated proposal fails explicitly.
+- Worker-side and multi-round autonomous function calling are not supported.
 - No multimodal message content
 - No token estimation when a backend omits usage
 

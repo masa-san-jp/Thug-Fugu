@@ -8,19 +8,20 @@ Add allow-listed local tool execution to the OpenAI-compatible HTTP endpoint
 Status:
 
 - Slice 1 (explicit HTTP `tool_calls` input) is implemented.
-- Backend-generated assistant tool proposals and backend pass-through remain
-  future work.
+- Slice 2 (backend-generated assistant tool proposals) and Slice 3 (backend
+  `tools` / `tool_choice` pass-through) are implemented for `synthesizer_only`
+  mode with a single tool round.
 
-The current HTTP path validates `tools` / `tool_choice` in shape-only mode but
-does not execute tools. The `consult()` / MCP path already supports allow-listed
-local execution. This spec defines how to bring that capability to HTTP without
-turning the HTTP server into an arbitrary tool runner.
+The HTTP path validates and passes `tools` to the configured synthesizer, and
+can execute one generated allow-listed tool round. The `consult()` / MCP path
+also supports allow-listed local execution. This spec defines the safety
+boundary that prevents the HTTP server from becoming an arbitrary tool runner.
 
 ## 2. Current state
 
 - `tool_calling.enabled=false` by default.
 - HTTP accepts tool schemas only when `tool_calling.enabled=true`.
-- HTTP rejects `tool_choice=required` and named function choice.
+- HTTP accepts validated `none`, `auto`, `required`, and named function choices.
 - `consult(config, prompt, tool_calls=[...])` executes allow-listed local tools
   when `tool_calling.enabled=true` and `tool_calling.execute=true`.
 - Tool registry is local Python code in `src/fugu_local/tools.py`.
@@ -116,7 +117,7 @@ Add a Thug-Fugu extension object:
 
 OpenAI-compatible top-level fields remain unchanged.
 
-## 6. Later slices
+## 6. Implemented backend-generated tool slice
 
 ### Slice 2: assistant tool proposals
 
@@ -127,13 +128,31 @@ backend returns them. This requires:
 - preserving finish reason `tool_calls`
 - deciding whether HTTP responds with a proposal or executes it
 
-This is more complex and should not be mixed into Slice 1.
+Implemented behavior:
+
+- `execute=false`: return the assistant proposal with OpenAI-compatible
+  `message.tool_calls` and `finish_reason: tool_calls`.
+- `execute=true`: execute allow-listed calls, inject redacted/truncated results
+  as untrusted evidence, then call the synthesizer once more for the final
+  answer.
+- The loop is limited to one generated tool round. A second proposal fails
+  explicitly rather than executing autonomously.
 
 ### Slice 3: backend pass-through
 
-Pass `tools` / `tool_choice` to OpenAI-compatible backends that support tool
-calling. Ollama support should be backend-version gated and may need a different
-adapter strategy.
+`tools` / `tool_choice` are passed to OpenAI-compatible backends. Native Ollama
+receives `tools`; `tool_choice` is not sent because the native `/api/chat`
+schema does not consistently support it. Backend tool-call arguments are
+normalized to OpenAI-compatible JSON strings.
+
+Safety/compatibility limits:
+
+- Only the configured synthesizer receives tool schemas.
+- Workers remain tool-free and side-effect-free.
+- Requests with backend tools use buffered SSE; tool-call delta generation is
+  emitted after the backend response completes.
+- `auto` without a synthesizer retains the previous shape-only fallback.
+- `required` and named choices require a synthesizer role.
 
 ## 7. Internal design
 

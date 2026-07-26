@@ -47,7 +47,7 @@ Thug AI の Fugu のように、複数ロールのローカル LLM を協調実�
 - request deadline による総レイテンシ制御と部分結果フォールバック
 - モデルプールによる round-robin / least-busy ルーティングと失敗時フェイルオーバー
 - OpenAI Chat Completions 互換のローカル HTTP API（JSON 応答 + direct / role_split synthesizer の true token streaming + buffered SSE fallback）
-- tool calling（HTTP / `consult()` / MCP で allow-listed ローカル tool 実行に対応。HTTP は明示 `tool_calls` 入力の実行から対応）
+- tool calling（HTTP / `consult()` / MCPでallow-listedローカルtool実行に対応。HTTPは明示`tool_calls`とbackend-generated synthesizer callの1-round実行に対応）
 - Claude Code / MCP から呼べる consultant tool（`consult_thug_fugu`）
 - CLI からの単発実行（`run`）と評価ハーネス
 - 実 LLM なしで動く `echo` backend によるテスト
@@ -172,7 +172,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 |---|---|---|
 | `model_pools[]` | 複数 endpoint を 1 つの論理モデル名に束ね、round-robin / least-busy と失敗時フェイルオーバーを使う | `examples/fugu-local.model-pool.json` |
 | `coordinator` | 軽量 triage で `direct` / `role_split` / `parallel_ensemble` を選ぶ | `examples/fugu-local.coordinator.json`, [Fugu-style coordinator spec](docs/design/fugu-style-coordinator-spec.md) |
-| `tool_calling` | OpenAI tool schema の検証と allow-listed ローカル tool 実行。HTTP は明示 `tool_calls` 入力、`consult()` / MCP は `tool_calls` 引数に対応 | `examples/fugu-local.tool-calling.json`, [tool calling design](docs/design/tool-calling-support.md) |
+| `tool_calling` | OpenAI tool schemaの検証とallow-listedローカルtool実行。HTTPは明示`tool_calls`とsynthesizer backend生成call、`consult()` / MCPは`tool_calls`引数に対応 | `examples/fugu-local.tool-calling.json`, [tool calling design](docs/design/tool-calling-support.md) |
 
 ### selection_policy の挙動
 
@@ -437,7 +437,7 @@ python3 -m coverage report --fail-under=80
 
 ## 制限事項
 
-- tool calling は allow-listed ローカル実行に対応しています。HTTP では request 側の明示 `tool_calls` を実行できますが、バックエンドへの tool pass-through / backend-generated tool call の自動実行はまだ行いません。設計方針は [tool-calling-support.md](docs/design/tool-calling-support.md) を参照してください。
+- tool callingはallow-listedローカル実行に対応しています。HTTPでは明示`tool_calls`に加え、`synthesizer_only`でbackend-generated callを1 roundだけ実行できます。multi-round自律loopとworker-side toolsは未対応です。設計方針は [tool-calling-support.md](docs/design/tool-calling-support.md) を参照してください。
 - 適応コーディネーターは recursive coordination は持ちません。Verifier retry loop は `role_split` の任意機能として提供します。
 - `/v1/chat/completions` は最小対応です。`stream: true` は coordinator の `direct` pattern では backend delta を、`role_split` では worker 完了後の synthesizer delta を逐次 SSE 配信します。`parallel_ensemble` / verifier / request deadline / synthesizerなし / 非対応backendは buffered SSE にフォールバックします。対応範囲は [OpenAI 互換範囲](docs/reference/openai-compatibility.md) を参照してください。
 - `role_split` のstreamingでは `stream_options.include_progress=true` を指定すると、synthesizer出力の前に `event: fugu_progress`（`workers_done`、成功/失敗worker数）を送信します。OpenAI標準外の拡張のため既定は無効です。
@@ -450,7 +450,7 @@ python3 -m coverage report --fail-under=80
 
 | 項目 | 現状 | 実装するなら最初の切り方 | 設計書 |
 |---|---|---|---|
-| HTTP server-side tool execution | HTTP の明示 `tool_calls` 実行は対応済み。backend に tool call を生成させる pass-through は未実装 | 次にやるなら assistant tool proposal / backend pass-through | [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md) |
+| HTTP server-side tool execution | 明示 `tool_calls`、backend-generated synthesizer proposal、allow-listでの1-round実行、OpenAI-compatible/Ollamaへのtool schema pass-throughに対応 | multi-round自律loopやworker-side toolsが必要なら別設計へ分離 | [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md) |
 | true token streaming | `direct` backend delta、`role_split` synthesizer delta、opt-in progress eventを実装済み。ensemble等はbuffered fallback | 複数workerのinterleave等が必要なら別設計へ分離 | [true-token-streaming.md](docs/design/true-token-streaming.md) |
 | active health polling / queue | failover、passive cooldown、Ollama `/api/tags` / OpenAI-compatible `/v1/models` active probe、strict model presence、bounded HTTP queue は実装済み | 動的 endpoint 発見や高度な scheduler が必要なら別設計へ分離 | [active-health-queue.md](docs/design/active-health-queue.md) |
 

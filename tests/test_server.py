@@ -40,6 +40,17 @@ class UsageBackend:
         )
 
 
+class ToolSequenceBackend:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def chat(self, request):
+        self.calls.append(request)
+        index = min(len(self.calls) - 1, len(self.responses) - 1)
+        return self.responses[index]
+
+
 class ControlledStreamingBackend:
     def __init__(self, *, fail_before=False, fail_after=False):
         self.fail_before = fail_before
@@ -1012,7 +1023,11 @@ class ServerTests(unittest.TestCase):
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=5) as response:
-            return response.status, dict(response.headers), response.read()
+            return (
+                response.status,
+                {key.lower(): value for key, value in response.headers.items()},
+                response.read(),
+            )
 
     def _open_json(self, request):
         try:
@@ -1074,6 +1089,46 @@ class ToolCallingServerTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_port}"
 
+    def _backend_server(self, tool_calling, synth_backend):
+        config = config_from_dict(
+            {
+                "models": [
+                    {"name": "worker-model", "backend": "echo", "model": "worker"},
+                    {"name": "synth-model", "backend": "echo", "model": "synth"},
+                ],
+                "roles": [
+                    {
+                        "name": "worker",
+                        "model": "worker-model",
+                        "always_include": True,
+                    },
+                    {
+                        "name": "synthesizer",
+                        "model": "synth-model",
+                        "is_synthesizer": True,
+                    },
+                ],
+                "tool_calling": tool_calling,
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            FuguLocalOrchestrator(
+                config,
+                backend_overrides={
+                    "worker-model": UsageBackend(),
+                    "synth-model": synth_backend,
+                },
+            ),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}"
+
     def _post(self, base_url, payload):
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
@@ -1087,6 +1142,17 @@ class ToolCallingServerTests(unittest.TestCase):
                 return response.status, json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def _post_raw(self, base_url, payload):
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{base_url}/v1/chat/completions",
+            data=data,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, dict(response.headers), response.read()
 
     def test_tools_rejected_when_disabled(self):
         base = self._server({"enabled": False, "mode": "disabled"})
@@ -1209,7 +1275,132 @@ class ToolCallingServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("invalid function name", body["error"]["message"])
 
-    def test_tool_choice_required_not_supported(self):
+    def test_backend_tool_proposal_is_returned_in_openai_shape(self):
+        proposal = ChatResponse(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "arguments": '{"text":"evidence"}',
+                    },
+                }
+            ],
+            finish_reason="tool_calls",
+        )
+        synth = ToolSequenceBackend([proposal])
+        base = self._backend_server(
+            {"enabled": True, "mode": "synthesizer_only"},
+            synth,
+        )
+        tools = [{"type": "function", "function": {"name": "echo", "parameters": {}}}]
+
+        status, body = self._post(
+            base,
+            {
+                "messages": [{"role": "user", "content": "use a tool"}],
+                "tools": tools,
+                "tool_choice": "required",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        choice = body["choices"][0]
+        self.assertIsNone(choice["message"]["content"])
+        self.assertEqual(choice["message"]["tool_calls"], proposal.tool_calls)
+        self.assertEqual(choice["finish_reason"], "tool_calls")
+        self.assertEqual(synth.calls[0].tools, tools)
+
+    def test_backend_generated_tool_is_executed_and_resynthesized(self):
+        proposal = ChatResponse(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "arguments": '{"text":"local evidence"}',
+                    },
+                }
+            ],
+            finish_reason="tool_calls",
+        )
+        synth = ToolSequenceBackend([proposal, ChatResponse(content="final answer")])
+        base = self._backend_server(
+            {
+                "enabled": True,
+                "mode": "synthesizer_only",
+                "execute": True,
+                "allowed_tools": ["echo"],
+            },
+            synth,
+        )
+
+        status, body = self._post(
+            base,
+            {
+                "messages": [{"role": "user", "content": "use a tool"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "echo", "parameters": {}},
+                    }
+                ],
+                "tool_choice": "auto",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["choices"][0]["message"]["content"], "final answer")
+        self.assertEqual(body["thug_fugu"]["tool_results"][0]["content"], "local evidence")
+        self.assertEqual(len(synth.calls), 2)
+        self.assertIn("local evidence", synth.calls[1].messages[-1].content)
+
+    def test_backend_tool_proposal_streams_as_buffered_tool_call_delta(self):
+        proposal = ChatResponse(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "arguments": '{"text":"evidence"}',
+                    },
+                }
+            ],
+            finish_reason="tool_calls",
+        )
+        base = self._backend_server(
+            {"enabled": True, "mode": "synthesizer_only"},
+            ToolSequenceBackend([proposal]),
+        )
+
+        status, headers, raw = self._post_raw(
+            base,
+            {
+                "messages": [{"role": "user", "content": "use a tool"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "echo", "parameters": {}},
+                    }
+                ],
+                "stream": True,
+            },
+        )
+
+        events = _parse_sse_events(raw.decode("utf-8"))
+        chunks = [json.loads(event) for event in events[:-1]]
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", headers["content-type"])
+        self.assertEqual(chunks[1]["choices"][0]["delta"]["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "tool_calls")
+
+    def test_tool_choice_required_needs_synthesizer(self):
         base = self._server({"enabled": True, "mode": "synthesizer_only"})
         status, body = self._post(
             base,
@@ -1220,7 +1411,7 @@ class ToolCallingServerTests(unittest.TestCase):
             },
         )
         self.assertEqual(status, 400)
-        self.assertIn("not supported yet", body["error"]["message"])
+        self.assertIn("synthesizer role", body["error"]["message"])
 
 
 if __name__ == "__main__":

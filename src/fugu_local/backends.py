@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Mapping, Optional, Protocol
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol
 
 from .config import ModelConfig
 
@@ -31,6 +31,8 @@ class ChatRequest:
     messages: List[ChatMessage]
     temperature: float = 0.2
     max_tokens: Optional[int] = None
+    tools: Optional[List[dict]] = None
+    tool_choice: Any = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,8 @@ class ChatResponse:
     content: str
     raw: Optional[Mapping] = None
     usage: Optional["TokenUsage"] = None
+    tool_calls: Optional[List[dict]] = None
+    finish_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,41 @@ def _usage_from_ollama(response: Mapping) -> Optional[TokenUsage]:
         return None
     total = (prompt or 0) + (completion or 0)
     return TokenUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
+
+
+def _normalize_tool_calls(raw_calls: object) -> Optional[List[dict]]:
+    if raw_calls is None:
+        return None
+    if not isinstance(raw_calls, list):
+        raise BackendError("Backend tool_calls must be a list")
+
+    normalized = []
+    for index, raw in enumerate(raw_calls):
+        if not isinstance(raw, Mapping):
+            raise BackendError(f"Backend tool call at index {index} must be an object")
+        function = raw.get("function")
+        if not isinstance(function, Mapping):
+            raise BackendError(f"Backend tool call at index {index} has no function object")
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            raise BackendError(f"Backend tool call at index {index} has no function name")
+        arguments = function.get("arguments", "{}")
+        if isinstance(arguments, Mapping):
+            arguments = json.dumps(dict(arguments), ensure_ascii=False)
+        elif not isinstance(arguments, str):
+            raise BackendError(f"Backend tool call '{name}' arguments must be a string or object")
+        call_id = raw.get("id")
+        normalized.append(
+            {
+                "id": call_id if isinstance(call_id, str) and call_id else f"call_local_{index}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": arguments,
+                },
+            }
+        )
+    return normalized or None
 
 
 class LLMBackend(Protocol):
@@ -200,6 +239,10 @@ class OpenAICompatibleBackend:
         }
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
+        if request.tools:
+            payload["tools"] = request.tools
+            if request.tool_choice is not None:
+                payload["tool_choice"] = request.tool_choice
 
         response = _post_json(
             f"{base_url}/v1/chat/completions",
@@ -208,12 +251,25 @@ class OpenAICompatibleBackend:
             api_key=self.config.api_key,
         )
         try:
-            content = response["choices"][0]["message"]["content"]
+            choice = response["choices"][0]
+            message = choice["message"]
         except (KeyError, IndexError, TypeError) as exc:
             raise BackendError("OpenAI-compatible backend returned an unexpected response") from exc
-        if not isinstance(content, str):
+        if not isinstance(message, Mapping):
+            raise BackendError("OpenAI-compatible backend returned an unexpected message")
+        raw_content = message.get("content")
+        content = raw_content if isinstance(raw_content, str) else ""
+        tool_calls = _normalize_tool_calls(message.get("tool_calls"))
+        if not content and not tool_calls:
             raise BackendError("OpenAI-compatible backend response content is not a string")
-        return ChatResponse(content=content, raw=response, usage=_usage_from_openai(response))
+        finish_reason = choice.get("finish_reason") if isinstance(choice, Mapping) else None
+        return ChatResponse(
+            content=content,
+            raw=response,
+            usage=_usage_from_openai(response),
+            tool_calls=tool_calls,
+            finish_reason=finish_reason if isinstance(finish_reason, str) else None,
+        )
 
     def stream_chat(self, request: ChatRequest) -> Iterator[ChatStreamChunk]:
         base_url = (self.config.base_url or "").rstrip("/")
@@ -295,6 +351,8 @@ class OllamaBackend:
         }
         if request.max_tokens is not None:
             payload["options"]["num_predict"] = request.max_tokens
+        if request.tools:
+            payload["tools"] = request.tools
 
         response = _post_json(
             f"{base_url}/api/chat",
@@ -303,12 +361,30 @@ class OllamaBackend:
             api_key=self.config.api_key,
         )
         try:
-            content = response["message"]["content"]
+            message = response["message"]
         except (KeyError, TypeError) as exc:
             raise BackendError("Ollama backend returned an unexpected response") from exc
-        if not isinstance(content, str):
+        if not isinstance(message, Mapping):
+            raise BackendError("Ollama backend returned an unexpected message")
+        raw_content = message.get("content")
+        content = raw_content if isinstance(raw_content, str) else ""
+        tool_calls = _normalize_tool_calls(message.get("tool_calls"))
+        if not content and not tool_calls:
             raise BackendError("Ollama backend response content is not a string")
-        return ChatResponse(content=content, raw=response, usage=_usage_from_ollama(response))
+        done_reason = response.get("done_reason")
+        return ChatResponse(
+            content=content,
+            raw=response,
+            usage=_usage_from_ollama(response),
+            tool_calls=tool_calls,
+            finish_reason=(
+                "tool_calls"
+                if tool_calls
+                else done_reason
+                if isinstance(done_reason, str)
+                else None
+            ),
+        )
 
     def stream_chat(self, request: ChatRequest) -> Iterator[ChatStreamChunk]:
         base_url = (self.config.base_url or "").rstrip("/")
