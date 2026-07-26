@@ -388,7 +388,7 @@ logging.getLogger("fugu_local.orchestrator").setLevel(logging.INFO)  # 既定の
 - **新しい selection_policy**：`orchestrator._select_worker_roles` に分岐を追加し、`config.SUPPORTED_SELECTION_POLICIES` に登録。
 - **ロール追加**：config の `roles[]` に足すだけ（コード変更不要）。
 - **複数GPU/複数マシン分散**：単一ホストの複数GPUは [docs/operations/multi-gpu-role-assignment.md](docs/operations/multi-gpu-role-assignment.md)、複数ノードは [docs/design/distributed-inference.md](docs/design/distributed-inference.md) を参照（`models[].base_url` を各 endpoint へ向ける静的分散は追加実装なしで可能）。
-- **拡張機能の設計・実装仕様**：HTTP server-side tool execution は [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md)、真の token streaming は [true-token-streaming.md](docs/design/true-token-streaming.md)、能動 health polling / queue は [active-health-queue.md](docs/design/active-health-queue.md) を参照。
+- **実装済み機能の設計・実装仕様**：HTTP server-side tool execution は [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md)、真の token streaming は [true-token-streaming.md](docs/design/true-token-streaming.md)、能動 health polling / queue は [active-health-queue.md](docs/design/active-health-queue.md) を参照。
 
 ---
 
@@ -444,21 +444,22 @@ python3 -m coverage report --fail-under=80
 - GPU スケジューリングは持ちません。単一GPUの並列度調整、複数物理GPUの静的割当、複数ノード分散は設定と外部サーバー配置で扱います。
 - `usage` はバックエンドが報告した token usage を worker/synthesizer で集計します。未報告バックエンドでは互換用に `0` を返します。方針は [usage accounting 方針](docs/reference/usage-accounting.md) を参照してください。
 
-## ロードマップ: 残りの大きな未実装
+## ロードマップ: 実装状況
 
-実運用に必要な最小ライン（Agent-Lab / Claude Code から明示的に呼ぶローカル非同期サブエージェント、verifier retry、usage、model pool failover/cooldown、MCP/CLI JSON metadata）は実装済みです。残りは下記の大きめの拡張です。いずれも仕様・実装計画を分離してあります。
+実運用に必要な最小ライン（Agent-Lab / Claude Code から明示的に呼ぶローカル非同期サブエージェント、verifier retry、usage、model pool failover/cooldown、MCP/CLI JSON metadata）に加え、当初「大きめの拡張」として分離していた 3 件も実装済みです。各設計書には最終的な仕様と実装状況を記載しています。
 
-| 項目 | 現状 | 実装するなら最初の切り方 | 設計書 |
+| 項目 | 実装状況 | さらに広げる場合 | 設計書 |
 |---|---|---|---|
-| HTTP server-side tool execution | 明示 `tool_calls`、backend-generated synthesizer proposal、allow-listでの1-round実行、OpenAI-compatible/Ollamaへのtool schema pass-throughに対応 | multi-round自律loopやworker-side toolsが必要なら別設計へ分離 | [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md) |
-| true token streaming | `direct` backend delta、`role_split` synthesizer delta、opt-in progress eventを実装済み。ensemble等はbuffered fallback | 複数workerのinterleave等が必要なら別設計へ分離 | [true-token-streaming.md](docs/design/true-token-streaming.md) |
-| active health polling / queue | failover、passive cooldown、Ollama `/api/tags` / OpenAI-compatible `/v1/models` active probe、strict model presence、bounded HTTP queue は実装済み | 動的 endpoint 発見や高度な scheduler が必要なら別設計へ分離 | [active-health-queue.md](docs/design/active-health-queue.md) |
+| HTTP server-side tool execution | 実装済み。明示 `tool_calls`、backend-generated synthesizer proposal、allow-listでの1-round実行、OpenAI-compatible/Ollamaへのtool schema pass-through | multi-round自律loopやworker-side toolsは別設計として分離 | [http-server-side-tool-execution.md](docs/design/http-server-side-tool-execution.md) |
+| true token streaming | 実装済み。`direct` backend delta、`role_split` synthesizer delta、opt-in progress event（ensemble等はbuffered fallback） | 複数workerのinterleaveは別設計として分離 | [true-token-streaming.md](docs/design/true-token-streaming.md) |
+| active health polling / queue | 実装済み。failover、passive cooldown、Ollama `/api/tags` / OpenAI-compatible `/v1/models` active probe、strict model presence、bounded HTTP queue | 動的 endpoint 発見や高度な scheduler は別設計として分離 | [active-health-queue.md](docs/design/active-health-queue.md) |
 
-判断目安:
+今後の拡張候補（いずれも新規設計が必要で、実運用フィードバックを待って優先度を判断します）:
 
-- **Agent-Lab から明示的に Thug-Fugu を呼ぶ用途**では、上記 3 件は必須ではありません。まず実運用で feedback を貯めるのが推奨です。
-- **OpenAI 互換 HTTP API を他クライアントへ広げる**なら、HTTP server-side tool execution と true token streaming の優先度が上がります。
-- **複数 endpoint / 複数マシンで常時運用する**なら、active health polling / queue の優先度が上がります。
+- 動的 endpoint 発見 / 高度なスケジューラ
+- 複数 worker のトークン streaming interleave
+- ネイティブ `tool` role メッセージ型
+- 複数ノード分散推論（[distributed-inference.md](docs/design/distributed-inference.md)）
 
 ## セキュリティ注意
 
