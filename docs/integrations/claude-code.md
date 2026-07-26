@@ -100,8 +100,9 @@ Thug-Fugu adds:
 
 ## Notes and limits
 
-- Tool calling inside Thug-Fugu is currently shape-only; let the host agent execute
-  tools. Thug-Fugu is the reasoning consultant, not the tool executor (yet).
+- Thug-Fugu supports one allow-listed backend-generated tool round in
+  `synthesizer_only` mode. For multi-round or side-effecting workflows, keep the
+  host agent in control of tool execution.
 - Multi-role consultation is slower than a single call. Use
   `orchestrator.request_timeout_seconds` to bound latency and return partial
   results when a worker is slow.

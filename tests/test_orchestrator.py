@@ -46,6 +46,17 @@ class SequenceBackend:
         return ChatResponse(content=self.contents[index], usage=usage)
 
 
+class ResponseSequenceBackend:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def chat(self, request):
+        self.calls.append(request)
+        index = min(len(self.calls) - 1, len(self.responses) - 1)
+        return self.responses[index]
+
+
 def make_config(selection_policy="all", synthesizer=True):
     roles = [
         {
@@ -80,6 +91,35 @@ def make_config(selection_policy="all", synthesizer=True):
             ],
             "roles": roles,
             "orchestrator": {"selection_policy": selection_policy},
+        }
+    )
+
+
+def make_backend_tool_config(*, execute):
+    return config_from_dict(
+        {
+            "models": [
+                {"name": "planner-model", "backend": "echo", "model": "mock-planner"},
+                {"name": "synth-model", "backend": "echo", "model": "mock-synth"},
+            ],
+            "roles": [
+                {
+                    "name": "planner",
+                    "model": "planner-model",
+                    "always_include": True,
+                },
+                {
+                    "name": "synthesizer",
+                    "model": "synth-model",
+                    "is_synthesizer": True,
+                },
+            ],
+            "tool_calling": {
+                "enabled": True,
+                "mode": "synthesizer_only",
+                "execute": execute,
+                "allowed_tools": ["echo"] if execute else [],
+            },
         }
     )
 
@@ -242,6 +282,199 @@ class OrchestratorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackendToolLoopTests(unittest.TestCase):
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "echo evidence",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+    def test_proposal_mode_preserves_backend_tool_calls(self):
+        proposal = ChatResponse(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "arguments": '{"text":"evidence"}',
+                    },
+                }
+            ],
+            finish_reason="tool_calls",
+        )
+        synth = ResponseSequenceBackend([proposal])
+        orchestrator = FuguLocalOrchestrator(
+            make_backend_tool_config(execute=False),
+            backend_overrides={
+                "planner-model": StaticBackend("worker output"),
+                "synth-model": synth,
+            },
+        )
+
+        result = orchestrator.chat_with_backend_tools(
+            [ChatMessage(role="user", content="use a tool")],
+            tools=self.tools,
+            tool_choice="required",
+        )
+
+        self.assertEqual(result.content, "")
+        self.assertEqual(result.finish_reason, "tool_calls")
+        self.assertEqual(result.tool_calls, proposal.tool_calls)
+        self.assertEqual(result.tool_results, [])
+        self.assertEqual(synth.calls[0].tools, self.tools)
+        self.assertEqual(synth.calls[0].tool_choice, "required")
+
+    def test_execute_mode_runs_one_allowed_tool_round(self):
+        proposal = ChatResponse(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "arguments": '{"text":"local evidence"}',
+                    },
+                }
+            ],
+            finish_reason="tool_calls",
+            usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+        )
+        final = ChatResponse(
+            content="final answer",
+            finish_reason="stop",
+            usage=TokenUsage(prompt_tokens=4, completion_tokens=5, total_tokens=9),
+        )
+        synth = ResponseSequenceBackend([proposal, final])
+        worker = StaticBackend(
+            "worker output",
+            usage=TokenUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5),
+        )
+        orchestrator = FuguLocalOrchestrator(
+            make_backend_tool_config(execute=True),
+            backend_overrides={
+                "planner-model": worker,
+                "synth-model": synth,
+            },
+        )
+
+        result = orchestrator.chat_with_backend_tools(
+            [ChatMessage(role="user", content="use a tool")],
+            tools=self.tools,
+        )
+
+        self.assertEqual(result.content, "final answer")
+        self.assertEqual(result.finish_reason, "stop")
+        self.assertIsNone(result.tool_calls)
+        self.assertEqual(result.tool_results[0].content, "local evidence")
+        self.assertEqual(len(synth.calls), 2)
+        self.assertIsNone(synth.calls[1].tools)
+        self.assertIn("local evidence", synth.calls[1].messages[-1].content)
+        self.assertEqual(result.usage.total_tokens, 17)
+
+    def test_malformed_backend_arguments_fail_without_execution(self):
+        synth = ResponseSequenceBackend(
+            [
+                ChatResponse(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "echo",
+                                "arguments": "{not-json",
+                            },
+                        }
+                    ],
+                )
+            ]
+        )
+        orchestrator = FuguLocalOrchestrator(
+            make_backend_tool_config(execute=True),
+            backend_overrides={
+                "planner-model": StaticBackend("worker output"),
+                "synth-model": synth,
+            },
+        )
+
+        with self.assertRaises(OrchestrationError):
+            orchestrator.chat_with_backend_tools(
+                [ChatMessage(role="user", content="use a tool")],
+                tools=self.tools,
+            )
+
+    def test_disallowed_generated_tool_is_captured_as_evidence(self):
+        proposal = ChatResponse(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup_static",
+                        "arguments": '{"key":"x","data":{}}',
+                    },
+                }
+            ],
+        )
+        synth = ResponseSequenceBackend([proposal, ChatResponse(content="safe final")])
+        orchestrator = FuguLocalOrchestrator(
+            make_backend_tool_config(execute=True),
+            backend_overrides={
+                "planner-model": StaticBackend("worker output"),
+                "synth-model": synth,
+            },
+        )
+
+        result = orchestrator.chat_with_backend_tools(
+            [ChatMessage(role="user", content="use a tool")],
+            tools=self.tools,
+        )
+
+        self.assertEqual(result.content, "safe final")
+        self.assertIn("not allowed", result.tool_results[0].error)
+        self.assertIn("not allowed", synth.calls[1].messages[-1].content)
+
+    def test_second_generated_tool_round_is_rejected(self):
+        proposal = ChatResponse(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "arguments": '{"text":"evidence"}',
+                    },
+                }
+            ],
+        )
+        synth = ResponseSequenceBackend([proposal, proposal])
+        orchestrator = FuguLocalOrchestrator(
+            make_backend_tool_config(execute=True),
+            backend_overrides={
+                "planner-model": StaticBackend("worker output"),
+                "synth-model": synth,
+            },
+        )
+
+        with self.assertRaises(OrchestrationError) as ctx:
+            orchestrator.chat_with_backend_tools(
+                [ChatMessage(role="user", content="use a tool")],
+                tools=self.tools,
+            )
+
+        self.assertIn("maximum is one", str(ctx.exception))
 
 
 def make_verifier_config(max_retries=1, enabled=True, explicit_role=False):

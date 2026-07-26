@@ -236,6 +236,102 @@ class UsageParsingTests(unittest.TestCase):
         self.assertEqual(response.usage.total_tokens, 18)
 
 
+class BackendToolCallTests(unittest.TestCase):
+    def test_openai_backend_passes_tools_and_preserves_proposal(self):
+        backend = OpenAICompatibleBackend(
+            ModelConfig(
+                name="local",
+                backend="openai-compatible",
+                model="mock",
+                base_url="http://localhost:1234",
+            )
+        )
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "echo",
+                                    "arguments": '{"text":"evidence"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        tools = [{"type": "function", "function": {"name": "echo", "parameters": {}}}]
+
+        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)) as urlopen:
+            response = backend.chat(
+                ChatRequest(
+                    model="mock",
+                    messages=[ChatMessage("user", "hi")],
+                    tools=tools,
+                    tool_choice="required",
+                )
+            )
+
+        request_payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_payload["tools"], tools)
+        self.assertEqual(request_payload["tool_choice"], "required")
+        self.assertEqual(response.content, "")
+        self.assertEqual(response.finish_reason, "tool_calls")
+        self.assertEqual(response.tool_calls[0]["function"]["name"], "echo")
+
+    def test_ollama_backend_normalizes_object_arguments(self):
+        backend = OllamaBackend(
+            ModelConfig(
+                name="local",
+                backend="ollama",
+                model="mock",
+                base_url="http://localhost:11434",
+            )
+        )
+        payload = {
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "echo",
+                            "arguments": {"text": "evidence"},
+                        }
+                    }
+                ],
+            },
+            "done": True,
+            "done_reason": "stop",
+        }
+        tools = [{"type": "function", "function": {"name": "echo", "parameters": {}}}]
+
+        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)) as urlopen:
+            response = backend.chat(
+                ChatRequest(
+                    model="mock",
+                    messages=[ChatMessage("user", "hi")],
+                    tools=tools,
+                )
+            )
+
+        request_payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_payload["tools"], tools)
+        self.assertEqual(response.finish_reason, "tool_calls")
+        self.assertEqual(
+            json.loads(response.tool_calls[0]["function"]["arguments"]),
+            {"text": "evidence"},
+        )
+        self.assertTrue(response.tool_calls[0]["id"].startswith("call_local_"))
+
+
 class StreamingBackendTests(unittest.TestCase):
     def test_ollama_stream_maps_deltas_finish_and_usage(self):
         backend = OllamaBackend(
