@@ -428,7 +428,7 @@ CI と同等の品質チェック:
 python3 -m ruff check src tests
 python3 -m ruff format --check src tests
 PYTHONPATH=src python3 -m coverage run -m unittest discover -s tests -v
-python3 -m coverage report --fail-under=80
+python3 -m coverage report --fail-under=85
 ```
 
 `echo` backend を使えば実 LLM なしでオーケストレーションの配線をテストできます。

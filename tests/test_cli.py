@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 from fugu_local.cli import main
+from fugu_local.orchestrator import OrchestrationError
 
 
 class CliTests(unittest.TestCase):
@@ -26,6 +27,89 @@ class CliTests(unittest.TestCase):
         self.assertIn("usage", payload)
         self.assertIn("verification", payload)
         self.assertEqual(payload["selected_roles"], ["planner", "reviewer"])
+
+    def test_validate_config_reports_summary(self):
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            code = main(["validate-config", "--config", "examples/fugu-local.echo.json"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("model(s)", stdout.getvalue())
+        self.assertIn("selection_policy=", stdout.getvalue())
+
+    def test_config_error_returns_exit_code_2(self):
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", stderr):
+            code = main(["validate-config", "--config", "does-not-exist.json"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("Config error", stderr.getvalue())
+
+    def test_serve_rejects_non_positive_concurrency(self):
+        stderr = io.StringIO()
+        with mock.patch("fugu_local.cli.serve") as serve_mock:
+            with mock.patch("sys.stderr", stderr):
+                code = main(
+                    [
+                        "serve",
+                        "--config",
+                        "examples/fugu-local.echo.json",
+                        "--max-concurrent-requests",
+                        "0",
+                    ]
+                )
+
+        self.assertEqual(code, 2)
+        serve_mock.assert_not_called()
+        self.assertIn("must be positive", stderr.getvalue())
+
+    def test_serve_returns_zero_when_serve_completes(self):
+        with mock.patch("fugu_local.cli.serve", return_value=None) as serve_mock:
+            code = main(["serve", "--config", "examples/fugu-local.echo.json"])
+
+        self.assertEqual(code, 0)
+        serve_mock.assert_called_once()
+        self.assertEqual(serve_mock.call_args.kwargs["host"], "127.0.0.1")
+
+    def test_run_prints_plain_answer(self):
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            code = main(["run", "--config", "examples/fugu-local.echo.json", "hello there"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("echo", stdout.getvalue())
+
+    def test_run_reports_orchestration_error(self):
+        stderr = io.StringIO()
+        with mock.patch(
+            "fugu_local.cli.FuguLocalOrchestrator.chat",
+            side_effect=OrchestrationError("boom"),
+        ):
+            with mock.patch("sys.stderr", stderr):
+                code = main(["run", "--config", "examples/fugu-local.echo.json", "hello"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("Orchestration error", stderr.getvalue())
+
+    def test_run_json_reports_orchestration_error(self):
+        stderr = io.StringIO()
+        with mock.patch(
+            "fugu_local.cli.consult",
+            side_effect=OrchestrationError("boom"),
+        ):
+            with mock.patch("sys.stderr", stderr):
+                code = main(
+                    [
+                        "run",
+                        "--config",
+                        "examples/fugu-local.echo.json",
+                        "--json",
+                        "hello",
+                    ]
+                )
+
+        self.assertEqual(code, 1)
+        self.assertIn("Orchestration error", stderr.getvalue())
 
     def test_unsafe_bind_exits_before_serving_without_opt_in(self):
         with mock.patch("fugu_local.cli.serve") as serve_mock:
