@@ -1,0 +1,13 @@
+{
+  "models": [
+    {"name": "planner-model", "backend": "echo", "model": "planner-mock"},
+    {"name": "reviewer-model", "backend": "echo", "model": "reviewer-mock"},
+    {"name": "synth-model", "backend": "echo", "model": "synth-mock"}
+  ],
+  "roles": [
+    {"name": "planner", "model": "planner-model", "always_include": true},
+    {"name": "reviewer", "model": "reviewer-model", "always_include": true},
+    {"name": "synthesizer", "model": "synth-model", "is_synthesizer": true}
+  ],
+  "orchestrator": {"selection_policy": "all", "temperature": 0.2}
+}

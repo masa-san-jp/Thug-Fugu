@@ -93,8 +93,10 @@ node登録・動的発見・hardware inventory・自動配置・coordinator冗�
 
 - **既存実装**: static endpoint distribution、model pools、health、
   least-busy/round-robin、endpoint failover、HTTP queue。
-- **Phase 1（Issue #72以降）**: 2台以上の実機でsingle-vs-multi比較、
-  latency/token/power/costを記録。
+- **評価基盤（#72、実装済み）**: single-vs-multi条件、manifest、raw output、
+  latency/tokenを記録し、同じmanifestから再実行できる。
+- **Phase 1（#73–#75）**: 2台以上の実機比較とpower/cost測定を実施し、
+  複数model構成の価値仮説を検証。
 - **Phase 2**: node登録＋hardware/load inventory。
 - **Phase 3**: capability-aware dynamic routing / node failover / per-node queue。
 - **Phase 4**: node動的発見・モデル自動配置・coordinator冗長化。

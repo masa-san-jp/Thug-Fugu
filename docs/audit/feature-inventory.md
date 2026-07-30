@@ -92,7 +92,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Health endpoint URL credential/query redaction | `stable` | `routing.py` (`_safe_endpoint_label`) | `test_routing.py`, `test_server.py` |
 | Request body size limit | `stable` | `server.py` (`MAX_REQUEST_BODY_BYTES`) | `test_server.py` |
 | Token usage accounting | `stable` | `orchestrator.py` (`_aggregate_usage`), `backends.py` | `test_orchestrator.py`, `test_backends.py` |
-| Evaluation harness (coordinator) | `experimental` | `scripts/`, `evals/smoke.jsonl` | `test_evaluate_orchestration.py` |
+| Reproducible single-vs-multi evaluation harness | `stable` | `scripts/evaluate_orchestration.py`, `evals/` | `test_evaluate_orchestration.py` |
 
 ### Distributed inference (Epic target)
 
@@ -105,7 +105,8 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Dynamic registered-node failover / per-node backpressure | `not implemented` | design only | — |
 | Automatic model placement / lifecycle | `not implemented` | design only | — |
 | Coordinator redundancy (no SPOF) | `not implemented` | design only | — |
-| Single-vs-multi-model comparison benchmark | `not implemented` | — (tracked by #72) | — |
+| Single-vs-multi-model comparison framework | `stable` | `scripts/evaluate_orchestration.py` | `test_evaluate_orchestration.py` |
+| Reproducible empirical single-vs-multi results | `not implemented` | tracked by #73–#75 | — |
 
 ## Documentation synchronization
 
@@ -130,9 +131,9 @@ Resolved by [#71](https://github.com/masa-san-jp/Thug-Fugu/issues/71) on
   focused fix and regression test.
 - The built-in tool registry is intentionally tiny; there is no plugin/registration
   mechanism for user tools.
-- The evaluation harness measures coordinator behavior but does not yet compare a
-  single model against multi-model configurations, nor record latency / tokens /
-  power / cost together (Epic #69 Phase 1; issue #72).
+- The evaluation harness records quality, latency, errors, raw output, token
+  usage, config/seed/quantization/hardware metadata, and rerunnable manifests.
+  Automatic power and total-cost collection remains Phase 1 work (#74).
 - No machine-readable capability profile per model exists yet (Epic #69 Phase 2/3;
   issues #82–#85).
 

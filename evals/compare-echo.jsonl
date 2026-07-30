@@ -1,0 +1,2 @@
+{"id":"echo-alpha","prompt":"EVAL_TOKEN_ALPHA","grader":{"type":"contains","value":"EVAL_TOKEN_ALPHA"}}
+{"id":"echo-beta","prompt":"EVAL_TOKEN_BETA","grader":{"type":"contains","value":"EVAL_TOKEN_BETA"}}
