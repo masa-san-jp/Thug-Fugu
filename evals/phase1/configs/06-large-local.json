@@ -1,0 +1,14 @@
+{
+  "models": [
+    {"name": "large", "backend": "ollama", "model": "gemma4:26b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600}
+  ],
+  "roles": [
+    {"name": "solver", "model": "large", "always_include": true}
+  ],
+  "coordinator": {
+    "enabled": true,
+    "default_pattern": "direct",
+    "rules": [{"match": ["EVAL:"], "pattern": "direct"}]
+  },
+  "orchestrator": {"selection_policy": "all", "temperature": 0.2}
+}

@@ -411,6 +411,7 @@ PYTHONPATH=src python3 scripts/evaluate_orchestration.py \
 ```
 
 詳細は [evaluation-harness.md](docs/operations/evaluation-harness.md) を参照してください。
+実モデルのPhase 1比較matrixは [phase1-comparison.md](docs/operations/phase1-comparison.md) を参照してください。
 
 ---
 

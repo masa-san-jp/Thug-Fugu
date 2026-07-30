@@ -93,6 +93,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Request body size limit | `stable` | `server.py` (`MAX_REQUEST_BODY_BYTES`) | `test_server.py` |
 | Token usage accounting | `stable` | `orchestrator.py` (`_aggregate_usage`), `backends.py` | `test_orchestrator.py`, `test_backends.py` |
 | Reproducible single-vs-multi evaluation harness | `stable` | `scripts/evaluate_orchestration.py`, `evals/` | `test_evaluate_orchestration.py` |
+| Phase 1 comparison matrix / multi-seed domain statistics | `experimental` | `evals/phase1/`, `scripts/run_phase1_comparison.sh` | `test_evaluate_orchestration.py` |
 
 ### Distributed inference (Epic target)
 

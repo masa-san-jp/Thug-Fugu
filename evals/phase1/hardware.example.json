@@ -1,0 +1,8 @@
+{
+  "host_label": "replace-me",
+  "cpu": "replace-me",
+  "gpu": "replace-me",
+  "ram_gb": 0,
+  "vram_gb": 0,
+  "power_meter": "replace-me"
+}

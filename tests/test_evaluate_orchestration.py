@@ -6,6 +6,8 @@ from unittest import mock
 
 from scripts import evaluate_orchestration as eval_script
 
+from fugu_local.config import load_config
+
 
 class FakeOrchestrator:
     def __init__(self, config):
@@ -42,6 +44,7 @@ class EvaluateOrchestrationTests(unittest.TestCase):
         self.assertTrue(eval_script._grade("  done ", {"type": "exact", "value": "done"}))
         with self.assertRaises(ValueError):
             eval_script._grade("x", {"type": "missing"})
+        self.assertEqual(eval_script._parse_seeds("1, 2,3", None), [1, 2, 3])
 
     def test_main_writes_csv_and_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,8 +145,8 @@ class EvaluateOrchestrationTests(unittest.TestCase):
                         f"single={config}",
                         "--condition-meta",
                         f"single={metadata}",
-                        "--seed",
-                        "42",
+                        "--seeds",
+                        "42,43",
                         "--temperature",
                         "0.1",
                         "--hardware-json",
@@ -166,8 +169,9 @@ class EvaluateOrchestrationTests(unittest.TestCase):
                 self.assertTrue((output / name).exists(), name)
 
             manifest = json.loads((output / "manifest.json").read_text())
-            self.assertEqual(manifest["schema_version"], 1)
+            self.assertEqual(manifest["schema_version"], 2)
             self.assertEqual(manifest["seed"], 42)
+            self.assertEqual(manifest["seeds"], [42, 43])
             self.assertEqual(manifest["temperature_override"], 0.1)
             self.assertEqual(manifest["hardware"]["gpu"], "test-gpu")
             self.assertEqual(
@@ -177,11 +181,14 @@ class EvaluateOrchestrationTests(unittest.TestCase):
             snapshot = json.loads((output / "inputs/01-single.json").read_text())
             self.assertEqual(snapshot["models"][0]["api_key"], "<redacted>")
 
-            row = json.loads((output / "results.jsonl").read_text().splitlines()[0])
+            result_lines = (output / "results.jsonl").read_text().splitlines()
+            self.assertEqual(len(result_lines), 2)
+            row = json.loads(result_lines[0])
             self.assertEqual(row["content"], "Paris")
             self.assertEqual(row["usage"]["total_tokens"], 5)
             summary = json.loads((output / "summary.json").read_text())
-            self.assertEqual(summary["conditions"]["single"]["total_tokens"], 5)
+            self.assertEqual(summary["conditions"]["single"]["total_tokens"], 10)
+            self.assertEqual(summary["conditions"]["single"]["seeds"], [42, 43])
 
             with mock.patch.object(eval_script, "FuguLocalOrchestrator", FakeOrchestrator):
                 rerun_code = eval_script.main(
@@ -195,13 +202,75 @@ class EvaluateOrchestrationTests(unittest.TestCase):
 
             self.assertEqual(rerun_code, 0)
             rerun_manifest = json.loads((rerun_output / "manifest.json").read_text())
-            self.assertEqual(rerun_manifest["seed"], 42)
+            self.assertEqual(rerun_manifest["seeds"], [42, 43])
             self.assertEqual(
                 rerun_manifest["source_manifest"],
                 str((output / "manifest.json").resolve()),
             )
             rerun_row = json.loads((rerun_output / "results.jsonl").read_text().splitlines()[0])
             self.assertEqual(rerun_row["content"], "Paris")
+
+    def test_summary_groups_domains_and_reports_uncertainty(self):
+        rows = [
+            {
+                "condition": "A",
+                "case_id": "m1",
+                "domain": "math",
+                "seed": 1,
+                "passed": True,
+                "wall_ms": 10,
+                "error": "",
+                "usage": {"total_tokens": 5},
+            },
+            {
+                "condition": "A",
+                "case_id": "m1",
+                "domain": "math",
+                "seed": 2,
+                "passed": False,
+                "wall_ms": 20,
+                "error": "",
+                "usage": {"total_tokens": 7},
+            },
+            {
+                "condition": "A",
+                "case_id": "q1",
+                "domain": "qa",
+                "seed": 1,
+                "passed": True,
+                "wall_ms": 30,
+                "error": "",
+                "usage": None,
+            },
+        ]
+
+        metrics = eval_script._summarize(rows)["conditions"]["A"]
+
+        self.assertEqual(metrics["runs"], 3)
+        self.assertEqual(metrics["unique_cases"], 2)
+        self.assertEqual(metrics["seeds"], [1, 2])
+        self.assertEqual(metrics["accuracy"], 0.6667)
+        self.assertEqual(metrics["total_tokens"], 12)
+        self.assertEqual(set(metrics["domains"]), {"math", "qa"})
+        self.assertEqual(metrics["domains"]["math"]["accuracy"], 0.5)
+        self.assertLess(metrics["accuracy_ci95"][0], metrics["accuracy"])
+        self.assertGreater(metrics["accuracy_ci95"][1], metrics["accuracy"])
+
+    def test_phase1_fixtures_validate(self):
+        root = Path("evals/phase1")
+        cases = list(eval_script._load_cases(root / "tasks.jsonl"))
+        self.assertGreaterEqual(len(cases), 10)
+        self.assertEqual(
+            {case.domain for case in cases},
+            {"math", "reasoning", "qa", "coding"},
+        )
+        config_paths = sorted((root / "configs").glob("*.json"))
+        self.assertEqual(len(config_paths), 7)
+        for path in config_paths:
+            with self.subTest(path=path):
+                config = load_config(str(path))
+                self.assertTrue(config.models)
+                self.assertTrue(config.roles)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1 @@
+{"quantization":"mixed: Q4_K_M + MXFP4","models":["gemma4:26b","gemma4:e4b","gpt-oss:20b","qwen2.5:0.5b"]}
