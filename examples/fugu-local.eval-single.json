@@ -1,0 +1,9 @@
+{
+  "models": [
+    {"name": "solo", "backend": "echo", "model": "solo-mock"}
+  ],
+  "roles": [
+    {"name": "solver", "model": "solo", "always_include": true}
+  ],
+  "orchestrator": {"selection_policy": "all", "temperature": 0.2}
+}

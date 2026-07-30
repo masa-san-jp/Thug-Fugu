@@ -140,13 +140,19 @@ planによる動的role→model assignment、自己再帰、学習ルーター�
 - **目的**：コーディネーターの選択が本当に結果を良くしてるかを数字で出す。**これが無いと Fugu の"形"だけ真似て学習の旨み無しで迷子**になる（コーディネーターの目利きが全体の成否）。
 - **構成**：問題セット（coding/reasoning/QA を各数十問・正解 or 採点器つき）× 実行条件〔A 単一良モデル / B 静的役割分割 / C 適応コーディネーター〕を回し、正答率・レイテンシ・コスト(token)・一貫性を比較表に。
 - **採点**：自動（正解一致／ユニットテスト／LLM-judge をローカル小モデルで）。
-- **出力**：CSV ＋サマリ。Phase ごとに回して退行を検知。Phase 4 の学習の教師信号にも流用。
+- **実装済み出力（#72）**：experiment manifest、入力snapshot、full raw
+  JSONL、CSV、summary JSON、再実行command。seed、temperature、model、
+  quantization metadata、hardware metadata、latency、token usageを保存する。
+- **後続**：実タスクdataset、power/cost測定、同一/異種model・role構成の
+  比較実験（#73–#75）。
 
 ## 9. 段階デリバリ＋受け入れ条件
 - **実装済み**：適応コーディネーター（rule/heuristic/meta-call・非学習）、
   パターン実行器3種、plan logging、verifier retry、
   pool/LB/health/failover、smoke evaluation harness。
-- **未完了 Phase 0/1（#72–#75）**：異種ロールを実機で比較し、
+- **評価基盤実装済み（#72）**：single/multi条件を同一datasetで実行し、
+  manifestから再実行できる。
+- **未完了 Phase 0/1（#73–#75）**：異種ロールを実機で比較し、
   single/static/adaptive条件の品質・latency・token・power・costを測定する。
 - **将来 Phase 2（#82–#85）**：capability profile、task classification、
   model/role/strategy自動選択、実績に基づくweight更新。
