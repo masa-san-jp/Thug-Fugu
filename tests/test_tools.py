@@ -10,6 +10,14 @@ from fugu_local.tools import (
 
 
 class ParseToolCallsTests(unittest.TestCase):
+    def test_parse_rejects_non_list(self):
+        with self.assertRaises(ToolExecutionError):
+            parse_tool_calls({"not": "a list"})
+
+    def test_parse_rejects_non_object_item(self):
+        with self.assertRaises(ToolExecutionError):
+            parse_tool_calls(["not an object"])
+
     def test_parse_json_string_arguments(self):
         calls = parse_tool_calls(
             [
@@ -40,6 +48,20 @@ class ParseToolCallsTests(unittest.TestCase):
         with self.assertRaises(ToolExecutionError):
             parse_tool_calls([{"type": "web", "function": {"name": "x"}}])
 
+    def test_parse_rejects_missing_function_name(self):
+        with self.assertRaises(ToolExecutionError):
+            parse_tool_calls([{"type": "function", "function": {}}])
+
+    def test_parse_rejects_non_string_or_object_arguments(self):
+        with self.assertRaises(ToolExecutionError):
+            parse_tool_calls([{"type": "function", "function": {"name": "echo", "arguments": 1}}])
+
+    def test_parse_rejects_arguments_decoding_to_non_object(self):
+        with self.assertRaises(ToolExecutionError):
+            parse_tool_calls(
+                [{"type": "function", "function": {"name": "echo", "arguments": "[]"}}]
+            )
+
 
 class ExecuteToolCallsTests(unittest.TestCase):
     def _call(self, name, args, cid="c1"):
@@ -63,6 +85,15 @@ class ExecuteToolCallsTests(unittest.TestCase):
             max_output_chars=100,
         )
         self.assertIn("not allowed", results[0].error)
+
+    def test_reports_allowed_but_unregistered_tool(self):
+        results = execute_tool_calls(
+            [self._call("missing", {})],
+            allowed_tools=["missing"],
+            timeout_seconds=5,
+            max_output_chars=100,
+        )
+        self.assertIn("not registered", results[0].error)
 
     def test_truncates_output(self):
         results = execute_tool_calls(
@@ -96,6 +127,51 @@ class ExecuteToolCallsTests(unittest.TestCase):
             max_output_chars=100,
         )
         self.assertTrue(results[0].error)
+
+    def test_non_string_result_is_stringified(self):
+        results = execute_tool_calls(
+            [self._call("number", {})],
+            allowed_tools=["number"],
+            timeout_seconds=5,
+            max_output_chars=100,
+            registry={"number": lambda args: 42},
+        )
+        self.assertEqual(results[0].content, "42")
+
+    def test_lookup_static_returns_string_and_serializes_objects(self):
+        results = execute_tool_calls(
+            [
+                self._call(
+                    "lookup_static",
+                    {"key": "text", "data": {"text": "value"}},
+                    cid="c1",
+                ),
+                self._call(
+                    "lookup_static",
+                    {"key": "object", "data": {"object": {"a": 1}}},
+                    cid="c2",
+                ),
+            ],
+            allowed_tools=["lookup_static"],
+            timeout_seconds=5,
+            max_output_chars=100,
+        )
+        self.assertEqual(results[0].content, "value")
+        self.assertEqual(results[1].content, '{"a": 1}')
+
+    def test_lookup_static_validates_arguments(self):
+        for args in (
+            {"key": "x", "data": []},
+            {"key": 1, "data": {}},
+        ):
+            with self.subTest(args=args):
+                results = execute_tool_calls(
+                    [self._call("lookup_static", args)],
+                    allowed_tools=["lookup_static"],
+                    timeout_seconds=5,
+                    max_output_chars=100,
+                )
+                self.assertTrue(results[0].error)
 
 
 if __name__ == "__main__":
