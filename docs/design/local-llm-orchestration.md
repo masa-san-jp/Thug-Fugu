@@ -1,10 +1,13 @@
 # ローカルLLMオーケストレーション設計仕様書
 
+Status: implemented (`v0.1.0`). 現在の機能状態は
+[`docs/audit/feature-inventory.md`](../audit/feature-inventory.md) をSSOTとする。
+
 ## 1. 背景と目的
 
 Thug AI の Fugu は「複数のAIエージェント / LLM を状況に応じて協調させる」ことを中核にしたオーケストレーション型の実行モデルを想定する。本仕様では、Fugu からローカル環境の LLM（Ollama、LM Studio、llama.cpp server、vLLM などの OpenAI-compatible server）を統一的に呼び出し、複数モデル・複数ロールの協調実行を可能にする最小実装を定義する。
 
-このリポジトリは現時点で空のため、依存を最小化した Python パッケージとして、以下を新規に実装する。
+v0.1.0では、依存を最小化したPythonパッケージとして以下を実装している。
 
 - ローカルLLMバックエンド抽象化
 - JSON 設定ファイルによるモデル / ロール定義
@@ -13,6 +16,11 @@ Thug AI の Fugu は「複数のAIエージェント / LLM を状況に応じて
 - OpenAI Chat Completions 互換のローカルHTTP API
 - CLI からの単発実行
 - 標準ライブラリだけで動くテスト可能なコア
+- model pool / failover / active health / bounded queue
+- adaptive coordinator / verifier retry / request deadline
+- true token streaming
+- allow-listed tool calling（明示call＋synthesizer生成callの1 round）
+- MCP consultant integration（optional dependency）
 
 ## 2. スコープ
 
@@ -32,6 +40,16 @@ Thug AI の Fugu は「複数のAIエージェント / LLM を状況に応じて
 - HTTP API
   - `/health`
   - `/v1/chat/completions`
+  - `/v1/models`
+- Streaming
+  - `direct` backend token streaming
+  - `role_split` worker完了後のsynthesizer streaming
+  - buffered SSE fallback / usage / opt-in progress event
+- Tool calling
+  - 明示 `tool_calls`
+  - synthesizer-only backend proposal / allow-listed 1-round execution
+- Model pools
+  - round-robin / least-busy / failover / passive cooldown / active health
 - CLI
   - `run`
   - `serve`
@@ -41,8 +59,10 @@ Thug AI の Fugu は「複数のAIエージェント / LLM を状況に応じて
 
 - モデルのダウンロード / インストール自動化
 - GPUリソーススケジューリング
-- ストリーミング応答
-- function calling / tool calling の完全互換
+- 複数worker token streamのinterleave
+- multi-round自律tool loop / worker-side tools
+- OpenAI APIの完全互換
+- 動的node登録・発見・モデル自動配置
 - 認証付き公開サーバー運用
 - proprietary Fugu API との直接統合
 
@@ -298,7 +318,7 @@ Response:
   - `/v1/chat/completions`
   - 不正JSON / 不正path
 
-## 9. 実装順序
+## 9. 実装順序（履歴）
 
 1. 設定スキーマとバリデーション
 2. Backend adapter
@@ -311,11 +331,10 @@ Response:
 
 ## 10. 将来拡張
 
-- streaming対応
-- tool calling対応
 - ロールごとのJSON schema output
-- モデルごとのコスト / latency / quality メトリクス
-- 自動ルーティングの学習化
-- GPUメモリ状況に応じたモデル選択
-- MCP / Codex tool executor との統合
-- Fugu公式APIや将来のSDKが公開された場合の adapter 追加
+- 単体/複数モデルの品質・latency・token・電力・総コスト比較
+- モデル能力プロファイルと適応ルーティング
+- GPU/VRAM状況に応じたモデル自動配置
+- 動的node discovery / coordinator冗長化
+- native `tool` role message / multi-round tool policy
+- Fugu公式APIや将来のSDKが公開された場合のadapter追加

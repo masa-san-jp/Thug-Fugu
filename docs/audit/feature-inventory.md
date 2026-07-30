@@ -107,20 +107,18 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Coordinator redundancy (no SPOF) | `not implemented` | design only | — |
 | Single-vs-multi-model comparison benchmark | `not implemented` | — (tracked by #72) | — |
 
-## README / docs vs implementation discrepancies
+## Documentation synchronization
 
-To be resolved by [#71](https://github.com/masa-san-jp/Thug-Fugu/issues/71).
+Resolved by [#71](https://github.com/masa-san-jp/Thug-Fugu/issues/71) on
+2026-07-30:
 
-1. `docs/design/local-llm-orchestration.md` §2.2 非対象 lists "ストリーミング応答"
-   and "function calling / tool calling の完全互換" as out of scope, and §10 将来拡張
-   lists "streaming対応" and "tool calling対応" as future. Both are now implemented
-   (streaming: #64–#66; tool calling: #41/#46/#59/#67). The doc is stale.
-2. `docs/design/distributed-inference.md` header says
-   `Status: draft（設計のみ・実装未）`. This is accurate today, but the "既にできる"
-   section should cross-link the implemented static-distribution and health/probe
-   features so the boundary with Epic #69 Phase 4 is unambiguous.
-3. No `CONTRIBUTING`-level rule yet requires updating docs on feature changes, and
-   CI/review has no doc-consistency check. Tracked by #71 completion criteria.
+- `local-llm-orchestration.md` now describes streaming/tool calling as
+  implemented and lists current non-goals/future work.
+- `distributed-inference.md` now separates implemented static endpoint
+  distribution/health/failover from unimplemented registered-node clustering.
+- `fugu-style-coordinator-spec.md` now marks implemented and partial phases.
+- `CONTRIBUTING.md` and the pull request template require feature status and
+  documentation consistency review.
 
 ## Known gaps and missing tests
 

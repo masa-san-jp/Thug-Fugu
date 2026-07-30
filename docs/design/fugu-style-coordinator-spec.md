@@ -1,6 +1,11 @@
 # Thug-Fugu 適応コーディネーター（Fugu 模倣）設計仕様書
 
-Status: draft（設計のみ・実装はマサさんレビュー後）。作成 2026-06-26 aiko-dev。
+Status: partial implementation。`direct` / `role_split` /
+`parallel_ensemble`選択、rule/heuristic/meta-call、verifier retry、
+model pool/LB/health/failover、評価ハーネスは実装済み。
+planによる動的role→model assignment、自己再帰、学習ルーターは未実装。
+作成 2026-06-26 aiko-dev、status更新 2026-07-30。
+現状SSOT: [`docs/audit/feature-inventory.md`](../audit/feature-inventory.md)。
 位置づけ: 本書が SSOT。背景＝`local-llm-orchestration.md`（現行最小オーケストレータ）/`distributed-inference.md`（複数ノード）/`multi-terminal-orchestration.md`（単機マルチ端末・作業メモ）。
 発端: マサさん 2026-06-26「単一マシン上で、役割分割と並列処理を、オーケストレーター自身がタスクを見て選ぶ。SakanaAI Fugu のオーケストレーション形態を模倣」。
 
@@ -28,11 +33,15 @@ Status: draft（設計のみ・実装はマサさんレビュー後）。作成 
 - **pattern（処理形態）**：`direct` / `role_split` / `parallel_ensemble`。
 - **coordinator**：タスクを見て pattern と役割割当（plan）を決める層。本specの中核。
 
-## 4. 現状（出発点・既存コード）
+## 4. 現状
 - `models[]`（name/backend/model/base_url/timeout）、`roles[]`（model/system_prompt/keywords/always_include/is_synthesizer）、`orchestrator`（selection_policy=keyword|all / max_parallel_workers / temperature）。
 - `FuguLocalOrchestrator.chat()`：worker を `ThreadPoolExecutor` 並列実行→synthesizer or 決定論マージ。role 失敗分離・run_id/latency ログあり。
 - backends：ollama / openai-compatible / echo。`base_url` は model ごと独立＝**異種モデルを別ポートへ向けるのは既に可能**。
-- → 足りないのは「**形態を選ぶ頭**」「同種プール/LB/failover」「検証ループ」「効果測定」。
+- `Coordinator`がrule→heuristic→optional meta-callの順にpatternを決定し、
+  `direct` / `role_split` / `parallel_ensemble`を切り替える。
+- model pool、LB、health、failover、verifier retry、evaluation harnessは実装済み。
+- 未実装なのはplanからの動的role/model assignment、自己再帰、学習による
+  routing weight更新、およびsingle-vs-multiの本格比較評価（#72以降）。
 
 ## 5. 目標アーキテクチャ
 ```
@@ -134,12 +143,15 @@ Status: draft（設計のみ・実装はマサさんレビュー後）。作成 
 - **出力**：CSV ＋サマリ。Phase ごとに回して退行を検知。Phase 4 の学習の教師信号にも流用。
 
 ## 9. 段階デリバリ＋受け入れ条件
-- **Phase 0（コード 0）**：異種ロールを 2〜3 端末で実走・実測。受入＝並列が実際に飛ぶ／アンサンブルが単一を超えるかの数字が出る。
-- **評価ハーネス**（Phase 0/1 で先行）：受入＝A/B/C を自動採点で比較表が出る。
-- **Phase 1（中核）**：適応コーディネーター（rule+meta-call・非学習）＋パターン実行器 3 種。受入＝plan ログが出て 3 形態が切り替わり、C が B/A に対して評価ハーネスで**有意に劣らない**（できれば勝つ）。
-- **Phase 2**：Verifier ループ＋pool/LB/health/failover。受入＝1 endpoint 落としても failover で完走／検証 fail→再委譲が効く。
-- **Phase 3**：自己再帰＋systemd 常駐。受入＝サーバ kill で自動復活／再帰が深さ・予算内で止まる。
-- **Phase 4+**：学習コーディネーター（別spec）。
+- **実装済み**：適応コーディネーター（rule/heuristic/meta-call・非学習）、
+  パターン実行器3種、plan logging、verifier retry、
+  pool/LB/health/failover、smoke evaluation harness。
+- **未完了 Phase 0/1（#72–#75）**：異種ロールを実機で比較し、
+  single/static/adaptive条件の品質・latency・token・power・costを測定する。
+- **将来 Phase 2（#82–#85）**：capability profile、task classification、
+  model/role/strategy自動選択、実績に基づくweight更新。
+- **将来 Phase 3+**：自己再帰、常駐process管理、学習コーディネーターは
+  評価結果を見て別specへ分離する。
 
 ## 10. リスク・正直な限界
 - **コーディネーターの目利きが全て**：振り分けが下手だと単一良モデルに普通に負ける（複雑さだけ増えて損）。→ 評価ハーネスで常時監視、ダメな pattern は即無効化。
