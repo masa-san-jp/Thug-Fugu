@@ -1,0 +1,23 @@
+{
+  "models": [
+    {"name": "planner-model", "backend": "ollama", "model": "qwen2.5:0.5b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600},
+    {"name": "solver-model", "backend": "ollama", "model": "gpt-oss:20b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600},
+    {"name": "critic-model", "backend": "ollama", "model": "gemma4:e4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600},
+    {"name": "judge-model", "backend": "ollama", "model": "gemma4:e4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600},
+    {"name": "synth-model", "backend": "ollama", "model": "gemma4:26b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600}
+  ],
+  "roles": [
+    {"name": "planner", "model": "planner-model", "system_prompt": "Decompose the task and identify constraints.", "always_include": true},
+    {"name": "solver", "model": "solver-model", "system_prompt": "Solve the task independently and give a precise answer.", "always_include": true},
+    {"name": "critic", "model": "critic-model", "system_prompt": "Look for mistakes and provide a corrected candidate.", "always_include": true},
+    {"name": "judge", "model": "judge-model", "system_prompt": "Verify the worker candidates.", "is_verifier": true},
+    {"name": "synthesizer", "model": "synth-model", "system_prompt": "Use verified evidence and return the best final answer.", "is_synthesizer": true}
+  ],
+  "coordinator": {
+    "enabled": true,
+    "default_pattern": "role_split",
+    "rules": [{"match": ["EVAL:"], "pattern": "role_split"}],
+    "verify": {"enabled": true, "max_retries": 1, "role": "judge"}
+  },
+  "orchestrator": {"selection_policy": "all", "max_parallel_workers": 3, "temperature": 0.2}
+}

@@ -1,0 +1,17 @@
+{
+  "models": [
+    {"name": "candidate", "backend": "ollama", "model": "gemma4:e4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600},
+    {"name": "synth", "backend": "ollama", "model": "gemma4:e4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600}
+  ],
+  "roles": [
+    {"name": "candidate", "model": "candidate", "always_include": true},
+    {"name": "synthesizer", "model": "synth", "is_synthesizer": true}
+  ],
+  "coordinator": {
+    "enabled": true,
+    "default_pattern": "parallel_ensemble",
+    "rules": [{"match": ["EVAL:"], "pattern": "parallel_ensemble"}],
+    "ensemble": {"n": 3, "vote": "synth"}
+  },
+  "orchestrator": {"selection_policy": "all", "max_parallel_workers": 3, "temperature": 0.2}
+}

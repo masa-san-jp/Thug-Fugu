@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reproducible single-vs-multi configuration evaluation bundles with manifests,
   input snapshots, full JSONL outputs, CSV/summary metrics, token usage, hardware
   and quantization metadata, and manifest-based reruns.
+- Multi-seed and per-domain evaluation summaries with Wilson 95% confidence
+  intervals, plus a fixed local Phase 1 comparison matrix and report template.
 
 ## [0.1.0] - 2026-07-30
 

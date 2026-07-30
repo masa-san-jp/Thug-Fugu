@@ -1,0 +1,12 @@
+{"id":"math-001","domain":"math","prompt":"EVAL: What is 17 multiplied by 6? Include the number in the answer.","grader":{"type":"regex","pattern":"\\b102\\b"}}
+{"id":"math-002","domain":"math","prompt":"EVAL: The sequence is 2, 6, 12, 20. What is the next number?","grader":{"type":"regex","pattern":"\\b30\\b"}}
+{"id":"math-003","domain":"math","prompt":"EVAL: A box has 24 items. One quarter are removed. How many remain?","grader":{"type":"regex","pattern":"\\b18\\b"}}
+{"id":"reasoning-001","domain":"reasoning","prompt":"EVAL: All bloops are razzies. No razzies are lazzies. Can any bloop be a lazzy? Answer yes or no with a short reason.","grader":{"type":"regex","pattern":"\\b(no|cannot)\\b"}}
+{"id":"reasoning-002","domain":"reasoning","prompt":"EVAL: If yesterday was Monday, what day is tomorrow?","grader":{"type":"contains","value":"Wednesday"}}
+{"id":"reasoning-003","domain":"reasoning","prompt":"EVAL: Alice is older than Bob, and Bob is older than Carol. Who is youngest?","grader":{"type":"contains","value":"Carol"}}
+{"id":"qa-001","domain":"qa","prompt":"EVAL: What is the capital of Japan?","grader":{"type":"contains","value":"Tokyo"}}
+{"id":"qa-002","domain":"qa","prompt":"EVAL: What chemical formula represents water?","grader":{"type":"regex","pattern":"\\bH2O\\b"}}
+{"id":"qa-003","domain":"qa","prompt":"EVAL: 日本の首都を日本語で答えてください。","grader":{"type":"contains","value":"東京"}}
+{"id":"coding-001","domain":"coding","prompt":"EVAL: What value does Python expression sum([1, 2, 3]) return?","grader":{"type":"regex","pattern":"\\b6\\b"}}
+{"id":"coding-002","domain":"coding","prompt":"EVAL: Which SQL keyword retrieves rows from a table?","grader":{"type":"regex","pattern":"\\bSELECT\\b"}}
+{"id":"coding-003","domain":"coding","prompt":"EVAL: In Python, which built-in function returns the number of items in a list?","grader":{"type":"regex","pattern":"\\blen\\b"}}

@@ -12,6 +12,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import platform
 import random
 import re
@@ -29,7 +30,7 @@ from fugu_local.backends import ChatMessage
 from fugu_local.config import FuguLocalConfig, load_config
 from fugu_local.orchestrator import FuguLocalOrchestrator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class EvalCase:
     case_id: str
     prompt: str
     grader: dict
+    domain: str = "unspecified"
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -61,6 +63,10 @@ def main(argv: Optional[list] = None) -> int:
         help="Optional per-condition metadata as LABEL=JSON_PATH (e.g. quantization).",
     )
     parser.add_argument("--seed", type=int, default=None, help="Recorded experiment seed")
+    parser.add_argument(
+        "--seeds",
+        help="Comma-separated experiment seeds (for uncertainty estimates)",
+    )
     parser.add_argument(
         "--temperature",
         type=float,
@@ -82,6 +88,8 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--csv", help="Legacy per-case CSV output path")
     parser.add_argument("--summary", help="Legacy aggregate summary JSON output path")
     args = parser.parse_args(argv)
+    if args.seed is not None and args.seeds:
+        raise SystemExit("use either --seed or --seeds, not both")
 
     if args.rerun_manifest:
         if not args.output_dir:
@@ -97,7 +105,7 @@ def main(argv: Optional[list] = None) -> int:
         run_spec = {
             "cases_path": Path(args.cases),
             "conditions": conditions,
-            "seed": 0 if args.seed is None else args.seed,
+            "seeds": _parse_seeds(args.seeds, args.seed),
             "temperature": args.temperature,
             "hardware": _load_hardware(Path(args.hardware_json))
             if args.hardware_json
@@ -111,7 +119,7 @@ def main(argv: Optional[list] = None) -> int:
 
     cases_path = Path(run_spec["cases_path"]).resolve()
     conditions = list(run_spec["conditions"])
-    seed = int(run_spec["seed"])
+    seeds = [int(seed) for seed in run_spec["seeds"]]
     temperature = run_spec["temperature"]
     cases = list(_load_cases(cases_path))
 
@@ -122,7 +130,7 @@ def main(argv: Optional[list] = None) -> int:
             cases_path=cases_path,
             conditions=conditions,
             case_count=len(cases),
-            seed=seed,
+            seeds=seeds,
             temperature=temperature,
             hardware=run_spec["hardware"],
             source_manifest=run_spec["source_manifest"],
@@ -132,16 +140,17 @@ def main(argv: Optional[list] = None) -> int:
     for condition in conditions:
         config = load_config(str(condition.config_path))
         orchestrator = FuguLocalOrchestrator(config)
-        for case in cases:
-            rows.append(
-                _run_case(
-                    condition,
-                    orchestrator,
-                    case,
-                    seed=seed,
-                    temperature=temperature,
+        for seed in seeds:
+            for case in cases:
+                rows.append(
+                    _run_case(
+                        condition,
+                        orchestrator,
+                        case,
+                        seed=seed,
+                        temperature=temperature,
+                    )
                 )
-            )
 
     summary = _summarize(rows)
     if bundle is not None:
@@ -162,6 +171,23 @@ def _parse_condition(raw: str) -> Condition:
     if not label:
         raise SystemExit("condition label must not be empty")
     return Condition(label=label, config_path=Path(path))
+
+
+def _parse_seeds(raw: Optional[str], single_seed: Optional[int]) -> list[int]:
+    if raw is None:
+        return [0 if single_seed is None else single_seed]
+    values = []
+    for item in raw.split(","):
+        stripped = item.strip()
+        if not stripped:
+            raise SystemExit("--seeds must be a comma-separated list of integers")
+        try:
+            values.append(int(stripped))
+        except ValueError as exc:
+            raise SystemExit("--seeds must contain integers") from exc
+    if not values:
+        raise SystemExit("--seeds must not be empty")
+    return values
 
 
 def _parse_condition_metadata(raw_values: list[str]) -> dict[str, dict]:
@@ -195,13 +221,16 @@ def _load_cases(path: Path):
             case_id = raw.get("id")
             prompt = raw.get("prompt")
             grader = raw.get("grader")
+            domain = raw.get("domain", "unspecified")
             if not isinstance(case_id, str) or not case_id:
                 raise ValueError(f"case line {line_number}: id must be a non-empty string")
             if not isinstance(prompt, str) or not prompt:
                 raise ValueError(f"case line {line_number}: prompt must be a non-empty string")
             if not isinstance(grader, dict):
                 raise ValueError(f"case line {line_number}: grader must be an object")
-            yield EvalCase(case_id=case_id, prompt=prompt, grader=grader)
+            if not isinstance(domain, str) or not domain:
+                raise ValueError(f"case line {line_number}: domain must be a non-empty string")
+            yield EvalCase(case_id=case_id, prompt=prompt, grader=grader, domain=domain)
 
 
 def _run_case(
@@ -240,6 +269,8 @@ def _run_case(
         "config": str(condition.config_path),
         "condition_metadata": condition.metadata or {},
         "case_id": case.case_id,
+        "domain": case.domain,
+        "seed": seed,
         "passed": passed,
         "wall_ms": wall_ms,
         "pattern": pattern,
@@ -278,7 +309,7 @@ def _prepare_bundle(
     cases_path: Path,
     conditions: list[Condition],
     case_count: int,
-    seed: int,
+    seeds: list[int],
     temperature: Optional[float],
     hardware: dict,
     source_manifest: Optional[Path],
@@ -324,7 +355,8 @@ def _prepare_bundle(
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "seed": seed,
+        "seed": seeds[0],
+        "seeds": seeds,
         "temperature_override": temperature,
         "cases": {
             "source_path": str(cases_path),
@@ -364,7 +396,8 @@ def _prepare_bundle(
 def _load_rerun_spec(manifest_path: Path) -> dict:
     manifest_path = manifest_path.resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != SCHEMA_VERSION:
+    schema_version = manifest.get("schema_version")
+    if schema_version not in (1, SCHEMA_VERSION):
         raise ValueError("unsupported evaluation manifest schema_version")
     root = manifest_path.parent
     cases_path = _prefer_matching_source(
@@ -389,7 +422,7 @@ def _load_rerun_spec(manifest_path: Path) -> dict:
     return {
         "cases_path": cases_path,
         "conditions": conditions,
-        "seed": manifest["seed"],
+        "seeds": manifest.get("seeds", [manifest["seed"]]),
         "temperature": manifest.get("temperature_override"),
         "hardware": manifest.get("hardware", {}),
         "source_manifest": manifest_path,
@@ -531,6 +564,8 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         "condition",
         "config",
         "case_id",
+        "domain",
+        "seed",
         "passed",
         "wall_ms",
         "pattern",
@@ -552,6 +587,8 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
                     "condition": row["condition"],
                     "config": row["config"],
                     "case_id": row["case_id"],
+                    "domain": row["domain"],
+                    "seed": row["seed"],
                     "passed": row["passed"],
                     "wall_ms": row["wall_ms"],
                     "pattern": row["pattern"],
@@ -584,28 +621,57 @@ def _summarize(rows: list[dict]) -> dict:
         by_condition.setdefault(row["condition"], []).append(row)
     summary: dict[str, Any] = {"conditions": {}}
     for condition, condition_rows in by_condition.items():
-        total = len(condition_rows)
-        passed = sum(1 for row in condition_rows if row["passed"])
-        latencies = [float(row["wall_ms"]) for row in condition_rows]
-        errors = sum(1 for row in condition_rows if row["error"])
-        token_values = [
-            row["usage"]["total_tokens"]
-            for row in condition_rows
-            if row.get("usage") and row["usage"].get("total_tokens") is not None
-        ]
-        summary["conditions"][condition] = {
-            "cases": total,
-            "passed": passed,
-            "accuracy": round(passed / total, 4) if total else 0.0,
-            "errors": errors,
-            "mean_wall_ms": round(statistics.mean(latencies), 1) if latencies else 0.0,
-            "median_wall_ms": round(statistics.median(latencies), 1) if latencies else 0.0,
-            "total_tokens": sum(token_values) if token_values else None,
-            "mean_total_tokens": (
-                round(statistics.mean(token_values), 1) if token_values else None
-            ),
+        metrics = _summary_metrics(condition_rows)
+        by_domain: dict[str, list[dict]] = {}
+        for row in condition_rows:
+            by_domain.setdefault(row["domain"], []).append(row)
+        metrics["domains"] = {
+            domain: _summary_metrics(domain_rows)
+            for domain, domain_rows in sorted(by_domain.items())
         }
+        summary["conditions"][condition] = metrics
     return summary
+
+
+def _summary_metrics(rows: list[dict]) -> dict:
+    total = len(rows)
+    passed = sum(1 for row in rows if row["passed"])
+    latencies = [float(row["wall_ms"]) for row in rows]
+    errors = sum(1 for row in rows if row["error"])
+    token_values = [
+        row["usage"]["total_tokens"]
+        for row in rows
+        if row.get("usage") and row["usage"].get("total_tokens") is not None
+    ]
+    return {
+        "cases": total,
+        "runs": total,
+        "unique_cases": len({row["case_id"] for row in rows}),
+        "seeds": sorted({row["seed"] for row in rows}),
+        "passed": passed,
+        "accuracy": round(passed / total, 4) if total else 0.0,
+        "accuracy_ci95": _wilson_interval(passed, total),
+        "errors": errors,
+        "mean_wall_ms": round(statistics.mean(latencies), 1) if latencies else 0.0,
+        "median_wall_ms": round(statistics.median(latencies), 1) if latencies else 0.0,
+        "total_tokens": sum(token_values) if token_values else None,
+        "mean_total_tokens": round(statistics.mean(token_values), 1) if token_values else None,
+    }
+
+
+def _wilson_interval(successes: int, total: int) -> list[float]:
+    if total <= 0:
+        return [0.0, 0.0]
+    z = 1.96
+    proportion = successes / total
+    denominator = 1 + z * z / total
+    centre = (proportion + z * z / (2 * total)) / denominator
+    margin = (
+        z
+        * math.sqrt(proportion * (1 - proportion) / total + z * z / (4 * total * total))
+        / denominator
+    )
+    return [round(max(0.0, centre - margin), 4), round(min(1.0, centre + margin), 4)]
 
 
 def _usage_payload(usage) -> Optional[dict]:

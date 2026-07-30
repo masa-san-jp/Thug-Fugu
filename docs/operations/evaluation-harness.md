@@ -8,6 +8,10 @@ The dependency-free harness runs multiple Thug-Fugu configurations against the
 same JSONL task set and records accuracy, errors, wall time, raw output, and
 backend-reported token usage.
 
+Multiple seeds (`--seeds 11,22,33`) repeat every `(condition, case)` run.
+Optional case `domain` fields produce per-domain summaries and Wilson 95%
+confidence intervals.
+
 Typical conditions:
 
 - **single**: one model / one worker baseline
@@ -71,7 +75,7 @@ The generated `rerun.sh` contains the same command.
 Each line is one JSON object:
 
 ```json
-{"id":"capital-france","prompt":"What is the capital of France?","grader":{"type":"contains","value":"Paris"}}
+{"id":"capital-france","domain":"qa","prompt":"What is the capital of France?","grader":{"type":"contains","value":"Paris"}}
 ```
 
 Supported deterministic graders:
@@ -133,7 +137,7 @@ depends on the serving implementation.
      --condition-meta single=/path/single-meta.json \
      --condition-meta multi=/path/multi-meta.json \
      --hardware-json /path/hardware.json \
-     --seed 42 \
+  --seeds 11,22,33 \
      --temperature 0.2 \
      --output-dir results/experiment-001
    ```
@@ -160,3 +164,6 @@ Compare quality together with latency, errors, and token usage. More worker call
 often improve quality by spending more computation; later Phase 1 work must add
 power and total-cost measurements so improvements are not attributed to
 orchestration when they are only caused by a larger inference budget.
+
+The checked-in Phase 1 matrix and reporting protocol are documented in
+[`phase1-comparison.md`](phase1-comparison.md).
