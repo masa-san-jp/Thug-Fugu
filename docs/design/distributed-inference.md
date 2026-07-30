@@ -1,7 +1,11 @@
 # 分散ローカル推論基盤 設計仕様（Thug-Fugu 拡張）
 
-Status: draft（設計のみ・実装未）。作成 2026-06-23 aiko-dev。
+Status: partial。静的な複数マシンendpoint指定、model pool、active health、
+least-busy/round-robin、endpoint failover、HTTP bounded queueは実装済み。
+node登録・動的発見・hardware inventory・自動配置・coordinator冗長化は未実装。
+作成 2026-06-23 aiko-dev、status更新 2026-07-30。
 親: `docs/design/local-llm-orchestration.md`（単機の最小オーケストレータ）。
+現状SSOT: [`docs/audit/feature-inventory.md`](../audit/feature-inventory.md)。
 狙い: **メモリの小さい非力なマシンを複数束ね、各マシンに軽量モデルを分散配置して、合計で大きな処理能力を出す**ローカル分散推論基盤にする。
 
 ---
@@ -17,6 +21,11 @@ Status: draft（設計のみ・実装未）。作成 2026-06-23 aiko-dev。
 - `models[].base_url` は **model ごとに独立**。→「model A はマシン1、model B はマシン2」と別エンドポイントへ向けられる。
 - worker は `ThreadPoolExecutor` で**並列に投げる**。→各 worker が別マシンの ollama を叩けば、物理的に並列実行される（各マシンが別 GPU を持てば真の並列）。
 - role 単位の失敗分離（1 worker 失敗でも他は続行）＋ synthesizer 失敗時の決定論的マージ。
+- `model_pools[]`で複数endpointを1論理modelへ束ね、`round_robin` /
+  `least_busy`とendpoint failoverを利用できる。
+- Ollama `/api/tags` / OpenAI-compatible `/v1/models` active probe、
+  passive cooldown、health-aware routingを利用できる。
+- HTTPサーバーにはoptional bounded queue / backpressureがある。
 
 > つまり **静的な複数マシン分散は追加実装ゼロで可能**（config の base_url を LAN 内の各ノードに振るだけ）。本設計は、その上に「動的・耐障害・スケジューリング」の層を足す。
 
@@ -38,38 +47,57 @@ Status: draft（設計のみ・実装未）。作成 2026-06-23 aiko-dev。
 
 | 層 | 役割 | 現状 | 追加内容 |
 |---|---|---|---|
-| ① ノード登録/発見 | どのマシンが居て何を載せてるか | 静的 config のみ | `nodes[]`（host/model/capacity）を config 化。将来は mDNS 等で動的発見 |
-| ② ヘルスチェック | 生存・負荷の監視 | 無し | 起動時＋定期に `/api/tags` or `/health` を叩き、死/過負荷ノードを選抜から除外 |
-| ③ ロードバランス/キュー | 同種モデルを複数ノードに置き、空きへ流す | 無し（model 名で 1 対 1） | 「論理モデル名→複数物理ノード」のプール。least-busy/round-robin で割当。満杯時はキュー |
-| ④ 障害フェイルオーバー | ノード障害時の再ルーティング | role 失敗分離＋決定論マージ（部分的に効く） | 失敗 worker を別ノードへ再試行（同一論理モデルの別ノード）。最終的に欠けても merge で着地 |
+| ① ノード登録/発見 | どのマシンが居て何を載せてるか | 静的endpoint configのみ | `nodes[]`（host/model/capacity）をconfig化。将来はmDNS等で動的発見 |
+| ② ヘルスチェック | 生存・負荷の監視 | endpoint active probe/passive cooldownは実装済み。node hardware/load inventoryは無し | node単位のCPU/GPU/RAM/VRAM/load/model状態を収集 |
+| ③ ロードバランス/キュー | 同種モデルを複数ノードに置き、空きへ流す | model poolのleast-busy/round-robinとHTTP bounded queueは実装済み | 登録nodeのcapacity-aware routingとper-node backpressure |
+| ④ 障害フェイルオーバー | ノード障害時の再ルーティング | 静的pool内endpoint failoverは実装済み | node registryから代替nodeを選ぶ動的reroute |
 | ⑤ モデル配置戦略 | メモリに載る範囲で何をどこに | 手動 | ノードの RAM/VRAM 申告に基づき、載るモデルだけ割当。大タスクは分割→複数ノードのアンサンブルで質を補完 |
 
 ## 5. config 拡張案（後方互換）
 
-既存の `models[]`（model→単一 base_url）は維持しつつ、論理モデル＝複数ノードのプールを足す：
+既存実装は`models[]`（model→単一base_url）と
+`model_pools[]`（論理model→複数endpoint）を併用できる。例:
+
+```json
+{
+  "model_pools": [
+    {
+      "name": "fast",
+      "backend": "ollama",
+      "model": "gpt-oss:20b",
+      "endpoints": ["http://node1:11434", "http://node3:11434"],
+      "policy": "least_busy",
+      "cooldown_seconds": 30,
+      "health": {"enabled": true, "interval_seconds": 30}
+    }
+  ]
+}
+```
+
+将来のcluster layerでは、endpoint URLの直接列挙に加えてnode metadataを
+参照できるようにする:
 
 ```json
 {
   "nodes": [
-    { "name": "node1", "base_url": "http://node1:11434", "ram_gb": 16, "models": ["gpt-oss:20b"] },
-    { "name": "node2", "base_url": "http://node2:11434", "ram_gb": 8,  "models": ["phi4"] }
-  ],
-  "model_pools": [
-    { "name": "fast", "model": "gpt-oss:20b", "nodes": ["node1", "node3"], "policy": "least_busy" }
-  ],
-  "orchestrator": { "selection_policy": "keyword", "failover": true, "health_interval_s": 30 }
+    {"name": "node1", "base_url": "http://node1:11434", "ram_gb": 16, "vram_gb": 8},
+    {"name": "node2", "base_url": "http://node2:11434", "ram_gb": 8, "vram_gb": 0}
+  ]
 }
 ```
 
-- `models[]`（単一 base_url）と `model_pools[]`（複数ノード）は併存可。role はどちらの論理名も参照できる。
-- 既存 config はそのまま動く（後方互換）。
+- 既存の`models[]`/`model_pools[]`は維持する（後方互換）。
+- `nodes[]`は登録・hardware inventory・動的配置のmetadata layerとして追加する。
 
 ## 6. 段階的デリバリ
 
-- **Phase 1（追加実装ほぼ無し）**: `models[].base_url` を LAN 内各ノードに振った静的分散を実機検証（2 台で並列が出るか実測）。
-- **Phase 2**: ヘルスチェック＋失敗 worker のフェイルオーバー（同一論理モデルの別ノード）。
-- **Phase 3**: `model_pools` と動的ロードバランス（least-busy/キュー）。
-- **Phase 4**: ノード動的発見・モデル自動配置。
+- **既存実装**: static endpoint distribution、model pools、health、
+  least-busy/round-robin、endpoint failover、HTTP queue。
+- **Phase 1（Issue #72以降）**: 2台以上の実機でsingle-vs-multi比較、
+  latency/token/power/costを記録。
+- **Phase 2**: node登録＋hardware/load inventory。
+- **Phase 3**: capability-aware dynamic routing / node failover / per-node queue。
+- **Phase 4**: node動的発見・モデル自動配置・coordinator冗長化。
 
 ## 7. 非力マシン前提の工夫
 
