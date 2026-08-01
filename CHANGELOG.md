@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and quantization metadata, and manifest-based reruns.
 - Multi-seed and per-domain evaluation summaries with Wilson 95% confidence
   intervals, plus a fixed local Phase 1 comparison matrix and report template.
+- Optional deterministic-answer normalization for Markdown, LaTeX, and Unicode
+  subscript/superscript formatting.
 
 ## [0.1.0] - 2026-07-30
 

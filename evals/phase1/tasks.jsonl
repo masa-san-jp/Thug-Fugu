@@ -5,7 +5,7 @@
 {"id":"reasoning-002","domain":"reasoning","prompt":"EVAL: If yesterday was Monday, what day is tomorrow?","grader":{"type":"contains","value":"Wednesday"}}
 {"id":"reasoning-003","domain":"reasoning","prompt":"EVAL: Alice is older than Bob, and Bob is older than Carol. Who is youngest?","grader":{"type":"contains","value":"Carol"}}
 {"id":"qa-001","domain":"qa","prompt":"EVAL: What is the capital of Japan?","grader":{"type":"contains","value":"Tokyo"}}
-{"id":"qa-002","domain":"qa","prompt":"EVAL: What chemical formula represents water?","grader":{"type":"regex","pattern":"\\bH2O\\b"}}
+{"id":"qa-002","domain":"qa","prompt":"EVAL: What chemical formula represents water?","grader":{"type":"regex","pattern":"\\bH2O\\b","normalize":true}}
 {"id":"qa-003","domain":"qa","prompt":"EVAL: 日本の首都を日本語で答えてください。","grader":{"type":"contains","value":"東京"}}
 {"id":"coding-001","domain":"coding","prompt":"EVAL: What value does Python expression sum([1, 2, 3]) return?","grader":{"type":"regex","pattern":"\\b6\\b"}}
 {"id":"coding-002","domain":"coding","prompt":"EVAL: Which SQL keyword retrieves rows from a table?","grader":{"type":"regex","pattern":"\\bSELECT\\b"}}

@@ -285,22 +285,48 @@ def _run_case(
 
 def _grade(content: str, grader: dict) -> bool:
     grader_type = grader.get("type")
+    normalize = grader.get("normalize", False)
+    if not isinstance(normalize, bool):
+        raise ValueError("grader normalize must be a boolean when provided")
+    text = _normalize_answer(content) if normalize else content
     if grader_type == "contains":
         value = grader.get("value")
         if not isinstance(value, str):
             raise ValueError("contains grader requires string value")
-        return value.casefold() in content.casefold()
+        target = _normalize_answer(value) if normalize else value
+        return target.casefold() in text.casefold()
     if grader_type == "regex":
         pattern = grader.get("pattern")
         if not isinstance(pattern, str):
             raise ValueError("regex grader requires string pattern")
-        return re.search(pattern, content, flags=re.IGNORECASE | re.MULTILINE) is not None
+        return re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) is not None
     if grader_type == "exact":
         value = grader.get("value")
         if not isinstance(value, str):
             raise ValueError("exact grader requires string value")
-        return content.strip() == value.strip()
+        target = _normalize_answer(value) if normalize else value
+        return text.strip() == target.strip()
     raise ValueError(f"unsupported grader type: {grader_type}")
+
+
+_SUBSCRIPT_MAP = {ord(c): str(i) for i, c in enumerate("₀₁₂₃₄₅₆₇₈₉")}
+_SUPERSCRIPT_MAP = {ord(c): str(i) for i, c in enumerate("⁰¹²³⁴⁵⁶⁷⁸⁹")}
+
+
+def _normalize_answer(text: str) -> str:
+    """Reduce LaTeX / Markdown / Unicode formatting noise before grading.
+
+    This lets deterministic graders match equivalent answers such as ``H2O``,
+    ``H_2O``, ``$\\text{H}_2\\text{O}$``, ``**H2O**``, and ``H₂O`` without adding
+    per-case special cases.
+    """
+
+    text = text.translate(_SUBSCRIPT_MAP).translate(_SUPERSCRIPT_MAP)
+    text = re.sub(r"\\text\s*\{([^}]*)\}", r"\1", text)
+    text = re.sub(r"\\[a-zA-Z]+", " ", text)
+    for char in "${}*`_\\":
+        text = text.replace(char, "")
+    return text
 
 
 def _prepare_bundle(
