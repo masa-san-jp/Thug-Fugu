@@ -46,6 +46,25 @@ class EvaluateOrchestrationTests(unittest.TestCase):
             eval_script._grade("x", {"type": "missing"})
         self.assertEqual(eval_script._parse_seeds("1, 2,3", None), [1, 2, 3])
 
+    def test_grader_normalizes_latex_markdown_and_unicode_digits(self):
+        grader = {
+            "type": "regex",
+            "pattern": r"\bH2O\b",
+            "normalize": True,
+        }
+        for answer in (
+            "H2O",
+            "H_2O",
+            r"$\text{H}_2\text{O}$",
+            "**H2O**",
+            "H₂O",
+        ):
+            with self.subTest(answer=answer):
+                self.assertTrue(eval_script._grade(answer, grader))
+
+        with self.assertRaises(ValueError):
+            eval_script._grade("H2O", {**grader, "normalize": "yes"})
+
     def test_main_writes_csv_and_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

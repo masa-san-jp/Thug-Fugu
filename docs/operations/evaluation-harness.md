@@ -86,6 +86,10 @@ Supported deterministic graders:
 | `regex` | `pattern` | Python regex search with `IGNORECASE | MULTILINE` |
 | `exact` | `value` | Exact string match after trimming whitespace |
 
+Any grader may set `"normalize": true` to strip common Markdown/LaTeX formatting
+and convert Unicode subscript/superscript digits before matching. This is useful
+for equivalent forms such as `H2O`, `H_2O`, `$\text{H}_2\text{O}$`, and `H₂O`.
+
 ## Recording quantization and hardware
 
 Per-condition metadata can record quantization or experiment notes:
