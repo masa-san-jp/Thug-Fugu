@@ -413,6 +413,24 @@ PYTHONPATH=src python3 scripts/evaluate_orchestration.py \
 詳細は [evaluation-harness.md](docs/operations/evaluation-harness.md) を参照してください。
 実モデルのPhase 1比較matrixは [phase1-comparison.md](docs/operations/phase1-comparison.md) を参照してください。
 
+### Phase 1 予備結果（単体 vs 複数モデル・3 seed）
+
+2026-08-02、Apple M4 Max / 128GB Unified Memory / Ollama で、12タスク（math・reasoning・qa・coding 各3）× 6ローカル条件 × 3 seed（合計各条件36 run）を実行しました。採点は決定論的graderに正規化を適用しています。生成物（raw output・host情報）はコミットせず、集計値のみを [docs/reports/phase1-local-3seed.md](docs/reports/phase1-local-3seed.md) と [evals/phase1/results/2026-08-02-local-3seed.summary.json](evals/phase1/results/2026-08-02-local-3seed.summary.json) に保存しています。
+
+| 条件 | 正答率 | 95% CI | 平均レイテンシ | 合計トークン |
+|---|---:|---:|---:|---:|
+| single-e4b（単体・直答） | 100% (36/36) | 90.4–100% | 6.9s | 9,465 |
+| large-local（大型単体・直答） | 100% (36/36) | 90.4–100% | 7.0s | 9,329 |
+| same3-majority（同一×3・多数決） | 100% (36/36) | 90.4–100% | 20.9s | 29,154 |
+| heterogeneous3（異種×3・統合） | 100% (36/36) | 90.4–100% | 26.8s | 46,129 |
+| same3-synth（同一×3・統合） | 100% (36/36) | 90.4–100% | 31.2s | 50,813 |
+| role-specialized（planner/solver/critic/judge） | 100% (36/36) | 90.4–100% | 37.1s | 68,499 |
+
+- 全条件が満点（ceiling effect）で、この易しいタスクセットでは**複数モデル構成による品質向上は観測されませんでした**。
+- 一方で複数モデル構成は`single-e4b`比で最大約5.4倍のレイテンシ・約7.2倍のトークンを消費しました。
+- 現時点の示唆: 簡単なタスクは single/direct を既定にし、高コスト戦略は品質向上が測定できる難タスクに限定して起動すべきです。
+- これは予備結論です。ceiling effectを解消する難易度の高いタスクセットと、必要ならクラウド上位モデル参照が今後必要です（[#73](https://github.com/masa-san-jp/Thug-Fugu/issues/73)）。
+
 ---
 
 ## テスト / 品質チェック

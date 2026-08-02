@@ -1,0 +1,17 @@
+{
+  "experiment": "phase1-local-3seed",
+  "date": "2026-08-02",
+  "tasks": 12,
+  "seeds": [11, 22, 33],
+  "runs_per_condition": 36,
+  "power_measured": false,
+  "conditions": {
+    "single-e4b": {"accuracy": 1.0, "accuracy_ci95": [0.9036, 1.0], "mean_wall_ms": 6864.8, "total_tokens": 9465},
+    "same3-synth": {"accuracy": 1.0, "accuracy_ci95": [0.9036, 1.0], "mean_wall_ms": 31172.5, "total_tokens": 50813},
+    "same3-majority": {"accuracy": 1.0, "accuracy_ci95": [0.9036, 1.0], "mean_wall_ms": 20874.6, "total_tokens": 29154},
+    "heterogeneous3": {"accuracy": 1.0, "accuracy_ci95": [0.9036, 1.0], "mean_wall_ms": 26773.8, "total_tokens": 46129},
+    "role-specialized": {"accuracy": 1.0, "accuracy_ci95": [0.9036, 1.0], "mean_wall_ms": 37074.5, "total_tokens": 68499},
+    "large-local": {"accuracy": 1.0, "accuracy_ci95": [0.9036, 1.0], "mean_wall_ms": 7028.1, "total_tokens": 9329}
+  },
+  "conclusion": "Ceiling effect: no quality difference; multi-model conditions cost more latency and tokens."
+}
