@@ -16,6 +16,7 @@ Thug AI の Fugu のように、複数ロールのローカル LLM を協調実�
 - OpenAI 互換範囲: [docs/reference/openai-compatibility.md](docs/reference/openai-compatibility.md)
 - usage accounting 方針: [docs/reference/usage-accounting.md](docs/reference/usage-accounting.md)
 - 機能実装状況（SSOT）: [docs/audit/feature-inventory.md](docs/audit/feature-inventory.md)
+- 次期実装計画（評価系是正 / 逐次推論DAG）: [docs/plans/phase2-decision-implementation-plan.md](docs/plans/phase2-decision-implementation-plan.md)
 - コントリビューション手順: [CONTRIBUTING.md](CONTRIBUTING.md)
 - 変更履歴: [CHANGELOG.md](CHANGELOG.md)
 - v0.1.0 リリースノート: [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md)
