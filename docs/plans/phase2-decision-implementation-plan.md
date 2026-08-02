@@ -3,9 +3,11 @@
 Status: planned（未着手）。親Issue: #106、Epic: #69。
 
 本書は #106 のコメント「原因分析と改善設計案」を、コーディングエージェントが
-**1 PR 単位で自律実装できる粒度**に分解した実装計画である。設計判断は本書で確定
-させてあり、実装者（人間・エージェントを問わない）が新たに設計を起こす必要がない
-ことを目標とする。
+**1 PR 単位で自律実装できる粒度**に分解した実装計画である。実装担当は
+**Sonnet 5 クラスのコーディングエージェント**を想定し、設計判断・アルゴリズム・
+プロンプト本文・作問手順まで本書で確定させてある。実装者が新たに設計を起こす
+必要がないことを目標とし、判断余地が残る作業はレシピ（§3.10）または初版固定
+（§5.4.1）で閉じている。
 
 対象範囲は「Phase 2 着手可否を数値で判定できる状態にすること」までであり、
 Phase 3 以降の分散基盤拡張は含まない。
@@ -84,6 +86,29 @@ python -m build
 - 仕様の空白は「現行挙動を変えない・最小・opt-in」を選ぶ。
 - 実験結果の**解釈**は行わない。数値の算出と記録に留める。
 - 「品質が向上した」等の主張をドキュメントに書かない。数値と条件だけを書く。
+
+### 0.8 実装エージェントの作業手順（Sonnet 5 クラスを想定）
+
+各 PR は次の手順で進める。
+
+1. §0 全体と、担当サブ WP の節**だけ**を読む。他 WP の節を読む必要はない
+   （依存する成果物は、マージ済みのコード・テストとして参照する）
+2. 節に列挙されたテスト名を先にテストファイルへ書き起こし、失敗することを確認する
+   （テスト駆動。テスト名は本書のものを**改名せずそのまま**使う）
+3. 実装し、§0.2 の必須ゲートをすべて通す
+4. 完了条件のチェックリストを PR 本文へ転記し、各項目を自己検証してからチェックする
+
+判断に迷った場合の優先順位: 担当節の記述 → §0.7 の既定方針 → それでも決まらない場合は
+実装を止めず「最小・opt-in・現行挙動維持」の選択肢を採り、PR 本文の
+「Open questions」欄に選択内容と根拠を 1〜3 行で記録する。本書と現行コードの記述が
+実質的に矛盾する場合（行番号のずれ等の軽微なものを除く）は、PR を draft にして
+#106 へコメントし停止する。
+
+スコープ逸脱の禁止事項:
+
+- 本書に無いリファクタリング・外部依存の追加・設定キーの追加
+- 担当サブ WP 外のファイル変更（§0.5 のドキュメント同期を除く）
+- 本書で定義したテスト名・スキーマのフィールド名・設定キー名・CLI フラグ名の改名
 
 ---
 
@@ -271,6 +296,32 @@ def derive_seed(base_seed: Optional[int], stream_key: str) -> Optional[int]:
   同じ入力からは必ず同じ CI が出ること
 - 旧 `schema_version` 1 / 2 の manifest による rerun は引き続き受理する（後方互換）
 
+paired bootstrap は以下の擬似コードのとおり実装する（scipy / numpy は導入しない。
+これ以外の CI 算出方式を選ばない）。
+
+```python
+def paired_bootstrap_ci(diffs, iterations=10000, rng_seed=20260802):
+    """diffs: 両条件に共通する unique task ごとの score 差
+    (candidate - baseline) のリスト。task_scores から task_id 順に作る。"""
+    rng = random.Random(rng_seed)
+    n = len(diffs)
+    means = []
+    for _ in range(iterations):
+        total = 0.0
+        for _ in range(n):
+            total += diffs[rng.randrange(n)]
+        means.append(total / n)
+    means.sort()
+    mean_diff = sum(diffs) / n
+    lo = means[int(0.025 * iterations)]
+    hi = means[int(0.975 * iterations) - 1]
+    return mean_diff, lo, hi
+```
+
+- `diffs` の並び順は `case_id` の辞書順で固定する（順序が変わると再標本化列が変わり
+  CI が非決定になるため）
+- 片方の条件にしか存在しないタスクは除外し、除外数を `paired[].n_excluded` に記録する
+
 ### 2.4 実装手順
 
 **WP-1a（PR 1）**
@@ -453,6 +504,32 @@ WP-2b（タスク本体 3 ファイルとキャリブレーション結果）。
 - 人間レビュー前の状態で実験を回してはならない旨を PR 本文に明記する
 - locked test セットの実行開始判断は人間が行う（§3.4）
 
+### 3.10 作問レシピ（実装エージェント向け）
+
+作問は本計画で唯一「正解の作り込み」という判断を含む作業のため、family ごとに
+以下のレシピへ**限定**する。レシピ外の自由作問は行わない。gold を作問者の暗算・記憶で
+決めることを禁止し、必ず機械的な導出を挟む。
+
+- `math`: パラメータ化した問題型（多段の数量推論・整数論・組合せ・確率）で出題し、
+  gold は使い捨ての計算スクリプトで算出する。導出過程（使った式と中間値）を
+  `gold_rationale` に全文残す
+- `logic`: 制約充足パズル（座席・スケジュール・真偽者など）。全解を列挙する
+  スクリプトで**解の一意性を確認**してから gold を確定し、列挙結果の要約を
+  `gold_rationale` に残す
+- `coding`: 「このコードの出力は何か」「この入力での戻り値は何か」形式。gold は
+  作問時にそのコードを実際に実行して得た値とし、実行出力を `gold_rationale` に貼る
+- `planning`: 依存関係のある工程の最短手数・実行可能な順序数など、答えが一意に
+  定まる形式。gold はスクリプトによる探索で確定する
+- `long_context`: 2,000 字以上の資料を prompt に含め、資料内の**複数箇所を
+  突き合わせないと答えられない**抽出・集計問題にする。gold は資料から機械的に
+  再計算できること
+- `japanese`: 上記いずれかの型を日本語で出題する（英語問題の翻訳ではなく、
+  日本語として自然な問題文を書く）
+
+作問用スクリプトはリポジトリにコミットしない（使い捨て）。ただしその出力は
+`gold_rationale` に必ず残す。コミット前に validator の gold 自己整合チェック（§3.6）を
+ローカルで実行する。
+
 ---
 
 ## 4. WP-3: 回答正規化と normalized majority / judge tiebreak
@@ -492,7 +569,9 @@ def majority_vote(contents: Sequence[str]) -> Tuple[str, int, int]:
 4. 前後の空白除去、連続空白を単一空白へ
 5. casefold
 6. 末尾の句読点（`.` `。` `,` `、`）除去
-7. 数値の桁区切りカンマ除去、`42.0` → `42` の末尾ゼロ正規化
+7. 数値の桁区切りカンマ除去、`42.0` → `42` の末尾ゼロ正規化。この規則は正規化後の
+   文字列全体が数値（`^[+-]?\d[\d,]*(\.\d+)?$` に一致）の場合にのみ適用する
+   （文中の数値には触らない。バージョン番号等の誤変換を防ぐため）
 
 `extract_final_answer` は、複数行テキストから「最終回答」に相当する部分を取り出す。
 接頭辞行があればその行を、無ければ最終非空行を返す。
@@ -600,7 +679,7 @@ class StageOutput:
    スキーマを外すため、フォールバックが正常系の一部である）
 
 各 stage のシステムプロンプトには、この JSON スキーマを明示的に埋め込む。
-プロンプト定型文は `stages.py` に定数として置き、テストで内容を固定する。
+プロンプト定型文は §5.4.1 の初版を `stages.py` に定数として置く（本文を発明しない）。
 
 ### 5.4 DAG の構成
 
@@ -635,6 +714,30 @@ writer     -> 採用された主張だけから最終回答を生成
 
 この「前段出力が後段プロンプトに入っていること」はテストで必ずアサートする。
 入っていなければ本 WP の目的を達成していない。
+
+### 5.4.1 stage システムプロンプト初版（このまま `stages.py` の定数に採用する）
+
+プロンプトの言い回しの調整は実装スコープ外とする（改善は Phase B 以降、実験結果を
+見て別 PR で行う）。初版として以下を固定し、テストは「定数が存在すること」と
+「前段出力セクションが埋め込まれること」のみを検証する。
+
+全 stage 共通で、system prompt の末尾に次の定数 `STAGE_JSON_INSTRUCTION` を連結する。
+
+> Respond with a single JSON object:
+> `{"answer": str, "claims": [{"text": str, "evidence": str, "confidence": float,
+> "verification": "required"}], "assumptions": [str], "uncertainties": [str],
+> "requested_checks": [str], "subproblems": [str]}`.
+> Omit fields that do not apply. Do not add any text outside the JSON object.
+
+| stage | system prompt 本文（初版・英語で固定） |
+|-------|--------------------------------------|
+| `planner` | You are the planner. Decompose the task into 2-5 self-contained subproblems and list the explicit constraints. Put the subproblems in "subproblems" and the constraints in "assumptions". |
+| `solver` | You are a solver. Solve ONLY the subproblem assigned to you, respecting the planner's constraints. Put your result in "answer" and each factual step in "claims". |
+| `verifier` | You are the verifier. For each claim listed below, check it against the task and the constraints. Set each claim's "verification" to "passed" or "failed" and put the reason in "evidence". |
+| `critic` | You are the critic. Read the candidate answers and the verification results below and identify concrete errors. Describe each error as a claim in "claims". |
+| `reviser` | You are the reviser. Fix the candidate answer using ONLY the critic's findings below. Put the corrected answer in "answer". |
+| `claim_judge` | You are the claim judge. For each claim below, decide adopt, reject, or unknown, and record the decision with its reason in "evidence". |
+| `writer` | You are the writer. Compose the final answer using ONLY the adopted claims below. Put the final answer in "answer". |
 
 ### 5.5 設定
 
@@ -837,6 +940,12 @@ synthesizer 破壊率・修復率の判定（「worker は正答、final は誤�
 | cost per correct | 総 wall_ms・トークン ÷ 正答数 |
 | family 別内訳 | 上記を `family` ごとに分解 |
 
+- phi 係数は 2×2 分割表（n11=両方正答, n10=A のみ正答, n01=B のみ正答, n00=両方誤答。
+  repeats がある場合はタスク単位の多数決で 0/1 化する）から次式で算出する。
+
+  `phi = (n11*n00 - n10*n01) / sqrt((n11+n10)*(n01+n00)*(n11+n01)*(n10+n00))`
+
+  分母が 0 のときは `null` を出力する。`math.sqrt` のみを使い、scipy 等は導入しない
 - 統計量はすべて `random.Random(20260802)` 固定でブートストラップし、決定的に再現できること
 - 欠損（`worker_outputs` が空、`stage_results` が無い）は例外にせず、
   該当指標を `null` として出力し、`analysis.json.warnings` に理由を記録する
