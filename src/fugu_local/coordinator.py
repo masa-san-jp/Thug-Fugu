@@ -86,7 +86,7 @@ class Coordinator:
         self._meta_backend = meta_backend
         self._meta_model_name = meta_model_name
 
-    def plan(self, user_text: str) -> Plan:
+    def plan(self, user_text: str, *, seed: Optional[int] = None) -> Plan:
         ensemble_n = self.config.ensemble.n
         ensemble_vote = self.config.ensemble.vote
 
@@ -111,7 +111,7 @@ class Coordinator:
                 ensemble_vote=ensemble_vote,
             )
 
-        meta = self._meta_call(user_text)
+        meta = self._meta_call(user_text, seed=seed)
         if meta is not None:
             return meta
 
@@ -140,7 +140,7 @@ class Coordinator:
             return "direct", "short, likely single-shot task"
         return None
 
-    def _meta_call(self, user_text: str) -> Optional[Plan]:
+    def _meta_call(self, user_text: str, *, seed: Optional[int] = None) -> Optional[Plan]:
         if self._meta_backend is None or self._meta_model_name is None:
             return None
         request = ChatRequest(
@@ -161,6 +161,7 @@ class Coordinator:
                 ChatMessage(role="user", content=user_text),
             ],
             temperature=0.0,
+            seed=seed,
         )
         try:
             response = self._meta_backend.chat(request)

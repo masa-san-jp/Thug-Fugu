@@ -147,6 +147,7 @@ src/fugu_local/
 | `max_parallel_workers` | int | `4` | Worker並列数 |
 | `temperature` | float | `0.2` | デフォルト温度 |
 | `max_tokens` | int/null | `null` | デフォルト最大トークン |
+| `seed` | int/null | `null` | ベースseed。`chat(seed=...)`明示指定が優先。role/worker/verifier/synthesizer/coordinator meta-callごとに`derive_seed(base_seed, stream_key)`で異なるseedへ導出してから送信する（同一seedを全ロールへ配ると同一モデルroleが決定論的に同一出力になり多様性が失われるため）。backendがseedを尊重する保証はない |
 
 ### 5.2 `backends.py`
 
@@ -162,10 +163,12 @@ class LLMBackend(Protocol):
 
 - `OllamaBackend`
   - `POST {base_url}/api/chat`
-  - payload: `model`, `messages`, `stream=false`, `options.temperature`
+  - payload: `model`, `messages`, `stream=false`, `options.temperature`,
+    `options.seed`（`ChatRequest.seed`が設定されている場合のみ）
 - `OpenAICompatibleBackend`
   - `POST {base_url}/v1/chat/completions`
-  - payload: `model`, `messages`, `temperature`, `max_tokens`
+  - payload: `model`, `messages`, `temperature`, `max_tokens`,
+    `seed`（`ChatRequest.seed`が設定されている場合のみ）
 - `EchoBackend`
   - テスト / オフライン開発用
   - 実LLMなしで入力を返す

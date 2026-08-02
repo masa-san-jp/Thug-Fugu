@@ -36,6 +36,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Verifier retry loop (bounded budget) | `stable` | `orchestrator.py` (`_run_verifier`) | `test_orchestrator.py` (`VerifierRetryTests`) |
 | Request deadline + partial-result fallback | `stable` | `orchestrator.py` (`_run_workers`, deadline) | `test_orchestrator.py` (`RequestDeadlineTests`) |
 | Structured non-sensitive per-run logging | `stable` | `orchestrator.py` (`_log_run`) | `test_orchestrator.py` (`ObservabilityTest`) |
+| Optional per-request seeding (`orchestrator.seed`, `chat(seed=...)`), derived per worker/verifier/synthesizer/coordinator stream and passed to Ollama/OpenAI-compatible backends when set | `experimental` | `orchestrator.py` (`derive_seed`), `backends.py`, `coordinator.py` | `test_orchestrator.py` (`DeriveSeedTests`, `SeedPropagationTests`), `test_backends.py` (`SeedPayloadTests`), `test_config.py` |
 
 ### Model pools / routing / failover
 
