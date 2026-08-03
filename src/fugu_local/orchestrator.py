@@ -218,6 +218,7 @@ class FuguLocalOrchestrator:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         seed: Optional[int] = None,
+        request_timeout_seconds: Optional[float] = None,
     ) -> OrchestrationResult:
         if not messages:
             raise OrchestrationError("At least one message is required")
@@ -225,7 +226,11 @@ class FuguLocalOrchestrator:
         run_id = uuid.uuid4().hex[:12]
         started = time.perf_counter()
 
-        request_timeout = self.config.orchestrator.request_timeout_seconds
+        request_timeout = (
+            self.config.orchestrator.request_timeout_seconds
+            if request_timeout_seconds is None
+            else request_timeout_seconds
+        )
         deadline = started + request_timeout if request_timeout is not None else None
         effective_seed = self.config.orchestrator.seed if seed is None else seed
 

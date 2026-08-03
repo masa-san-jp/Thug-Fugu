@@ -121,6 +121,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gold-answer correctness before use; this validator checks schema and
   self-consistency only, never answer correctness, and never touches
   `review_status`. See `docs/operations/benchmark-v2.md`.
+- WP-7 budget-matched / ablation comparison harness: separates "more
+  compute" from "orchestration itself helped" by pre-allocating a frozen
+  token/wall-clock budget instead of penalizing overage after the fact.
+  - `FuguLocalOrchestrator.chat()` gains a `request_timeout_seconds`
+    per-call override (mirrors the existing `seed` override), so a caller
+    can tighten the request deadline for one call without mutating the
+    orchestrator's config.
+  - New `scripts/make_budget_manifest.py`: computes each task family's
+    median token usage and median wall-clock time from a baseline
+    `results.jsonl` and writes a frozen, deterministic
+    `budget-manifest.json` (`budget = baseline median x coefficient`,
+    coefficient defaults to `1.0` and is recorded in the manifest).
+  - New `scripts/evaluate_orchestration.py --budget-manifest <path>`:
+    pre-allocates each case's family budget to `max_tokens`/
+    `request_timeout_seconds` before the call. Since prompt tokens and
+    mid-call timing aren't knowable in advance, a run whose actual usage
+    still exceeds its budget is recorded with `budget_exceeded: true` and
+    counted as incorrect regardless of what the grader said. `summary.json`
+    gains a `budget_filtered` auxiliary view (the same per-condition
+    metrics, computed only over runs that stayed within budget).
+  - New `scripts/make_ablation_configs.py`: generates one config per
+    disableable `sequential_dag` stage from a base DAG config (`solver`/
+    `writer` are never ablated), validating every generated config against
+    `fugu_local.config.config_from_dict` before writing any of them.
+  - New `scripts/run_phase2_comparison.sh` and `evals/phase2/configs/`
+    (conditions 1-5, plus a 7-cloud-reference template with no embedded
+    keys): drives Phase A (baseline measurement -> frozen budget manifest)
+    then Phase B (budget-matched and natural-configuration comparison
+    across every condition, including the auto-generated ablations).
+    Verified end-to-end against an `echo`-backend condition set (no real
+    network). See `docs/operations/phase2-comparison.md`.
 
 ### Changed
 - **Breaking**: `coordinator.ensemble.vote: "majority"` now normalizes

@@ -1117,6 +1117,44 @@ class RequestDeadlineTests(unittest.TestCase):
 
         self.assertIn("deadline", str(ctx.exception))
 
+    def test_per_call_request_timeout_seconds_overrides_config_default(self):
+        # No config-level request_timeout_seconds at all; the per-call
+        # override on chat() must still enforce a deadline.
+        orchestrator = FuguLocalOrchestrator(
+            make_deadline_config(),
+            backend_overrides={
+                "fast-model": StaticBackend("fast output"),
+                "slow-model": SleepBackend("slow output", 0.08),
+                "synth-model": StaticBackend("final output"),
+            },
+        )
+
+        result = orchestrator.chat(
+            [ChatMessage(role="user", content="hello")], request_timeout_seconds=0.02
+        )
+
+        self.assertIn("fast output", result.content)
+        timed_out = [worker for worker in result.worker_results if worker.timed_out]
+        self.assertEqual([worker.role for worker in timed_out], ["slow"])
+
+    def test_per_call_request_timeout_seconds_overrides_config_value(self):
+        # Config sets a generous timeout; the per-call override tightens it.
+        orchestrator = FuguLocalOrchestrator(
+            make_deadline_config(request_timeout_seconds=10.0),
+            backend_overrides={
+                "fast-model": StaticBackend("fast output"),
+                "slow-model": SleepBackend("slow output", 0.08),
+                "synth-model": StaticBackend("final output"),
+            },
+        )
+
+        result = orchestrator.chat(
+            [ChatMessage(role="user", content="hello")], request_timeout_seconds=0.02
+        )
+
+        timed_out = [worker for worker in result.worker_results if worker.timed_out]
+        self.assertEqual([worker.role for worker in timed_out], ["slow"])
+
 
 class DeriveSeedTests(unittest.TestCase):
     def test_derive_seed_is_deterministic(self):

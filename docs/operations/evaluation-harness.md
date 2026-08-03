@@ -215,6 +215,14 @@ orchestration when they are only caused by a larger inference budget.
 The checked-in Phase 1 matrix and reporting protocol are documented in
 [`phase1-comparison.md`](phase1-comparison.md).
 
+Phase 1's "later work" above is Phase 2's `--budget-manifest` flag: it
+pre-allocates a frozen per-family token/wall-clock budget to every
+condition before execution, so a quality difference can be checked
+against a compute-normalized comparison instead of only a
+larger-budget-wins comparison. See
+[`phase2-comparison.md`](phase2-comparison.md) for the full two-phase
+budget-matched / ablation harness.
+
 ## Error correlation & complementarity analysis (`scripts/analyze_results.py`)
 
 Coordinating multiple models only helps if their mistakes aren't
