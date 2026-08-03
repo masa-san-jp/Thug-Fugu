@@ -38,6 +38,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Request deadline + partial-result fallback | `stable` | `orchestrator.py` (`_run_workers`, deadline) | `test_orchestrator.py` (`RequestDeadlineTests`) |
 | Structured non-sensitive per-run logging | `stable` | `orchestrator.py` (`_log_run`) | `test_orchestrator.py` (`ObservabilityTest`) |
 | Optional per-request seeding (`orchestrator.seed`, `chat(seed=...)`), derived per worker/verifier/synthesizer/coordinator stream and passed to Ollama/OpenAI-compatible backends when set | `experimental` | `orchestrator.py` (`derive_seed`), `backends.py`, `coordinator.py` | `test_orchestrator.py` (`DeriveSeedTests`, `SeedPropagationTests`), `test_backends.py` (`SeedPayloadTests`), `test_config.py` |
+| `sequential_dag` pattern: fixed 7-stage inference DAG (planner→solver→verifier→critic→reviser→claim_judge→writer) where each stage consumes prior stages' structured output, with per-stage bypass rules, solver fanout, and lenient stage-output JSON parsing (`coordinator.dag`, see `docs/design/sequential-inference-dag.md`) | `experimental` | `stages.py`, `pipeline.py` (`run_sequential_dag`), `orchestrator.py` (`_run_sequential_dag`), `config.py` (`DagConfig`, `_validate_dag`) | `test_stages.py`, `test_pipeline.py`, `test_orchestrator.py` (`SequentialDagTests`), `test_config.py` (`DagConfigTests`), `test_server.py` (`test_sequential_dag_streaming_uses_buffered_fallback`) |
 
 ### Model pools / routing / failover
 

@@ -22,8 +22,10 @@ from .backends import (
 from .config import FuguLocalConfig, ModelConfig, ModelPoolConfig, RoleConfig
 from .coordinator import Coordinator, Plan
 from .health import HealthMonitor
+from .pipeline import StageCallRequest, StageCallResult, run_sequential_dag
 from .routing import ModelRouter, RouterMember
 from .seeding import derive_seed
+from .stages import StageOutput
 from .tools import ToolExecutionError, ToolResult, execute_tool_calls, parse_tool_calls
 
 logger = logging.getLogger("fugu_local.orchestrator")
@@ -96,6 +98,8 @@ class OrchestrationResult:
     tool_results: List[ToolResult] = field(default_factory=list)
     finish_reason: Optional[str] = None
     vote_summary: Optional[VoteSummary] = None
+    stage_results: List[StageOutput] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -252,6 +256,15 @@ class FuguLocalOrchestrator:
                 deadline=deadline,
                 seed=effective_seed,
             )
+        elif pattern == "sequential_dag":
+            outcome = self._run_sequential_dag(
+                messages,
+                user_text,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                deadline=deadline,
+                seed=effective_seed,
+            )
         else:
             outcome = self._run_role_split(
                 messages,
@@ -274,6 +287,8 @@ class FuguLocalOrchestrator:
             accounting_worker_results,
             synthesis_usage,
             vote_summary,
+            stage_results,
+            dag_warnings,
         ) = outcome
 
         if not any(result.ok for result in worker_results):
@@ -304,6 +319,8 @@ class FuguLocalOrchestrator:
             ),
             usage_is_estimate=False,
             vote_summary=vote_summary,
+            stage_results=stage_results,
+            warnings=dag_warnings,
         )
         self._log_run(result)
         return result
@@ -688,6 +705,8 @@ class FuguLocalOrchestrator:
             accounting_worker_results,
             synthesis_usage,
             None,
+            [],
+            [],
         )
 
     def _run_direct(
@@ -726,6 +745,8 @@ class FuguLocalOrchestrator:
             worker_results,
             None,
             None,
+            [],
+            [],
         )
 
     def _run_parallel_ensemble(
@@ -806,6 +827,82 @@ class FuguLocalOrchestrator:
             worker_results,
             synthesis_usage,
             vote_summary,
+            [],
+            [],
+        )
+
+    def _run_sequential_dag(
+        self,
+        messages: List[ChatMessage],
+        user_text: str,
+        *,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        deadline: Optional[float] = None,
+        seed: Optional[int] = None,
+    ) -> tuple:
+        dag_config = self.config.coordinator.dag
+        if not dag_config.stages:
+            raise OrchestrationError(
+                "coordinator.dag.stages is empty; the 'sequential_dag' pattern requires "
+                "coordinator.dag.stages to be configured"
+            )
+
+        def call_stage(request: StageCallRequest) -> StageCallResult:
+            role = self._role_by_name(request.role)
+            if role is None:
+                return StageCallResult(
+                    error=f"unknown role '{request.role}' referenced by DAG stage"
+                )
+            router = self._router_for_role(role)
+            stage_max_tokens = (
+                request.max_tokens
+                if request.max_tokens is not None
+                else self._max_tokens(max_tokens)
+            )
+            chat_request = ChatRequest(
+                model=router.model_string,
+                messages=[
+                    ChatMessage(role="system", content=request.system_prompt),
+                    ChatMessage(role="user", content=request.user_content),
+                ],
+                temperature=self._temperature(temperature),
+                max_tokens=stage_max_tokens,
+                seed=request.seed,
+            )
+            try:
+                response = router.chat(chat_request)
+            except Exception as exc:  # noqa: BLE001 - a stage failure must not crash the DAG.
+                return StageCallResult(error=str(exc))
+            return StageCallResult(text=response.content, usage=response.usage)
+
+        dag_result = run_sequential_dag(
+            dag_config.stages,
+            call_stage,
+            user_text,
+            base_seed=seed,
+            deadline=deadline,
+            max_stage_tokens=dag_config.max_stage_tokens,
+        )
+
+        worker_results = [
+            self._dag_stage_worker_result(output) for output in dag_result.stage_results
+        ]
+
+        return (
+            [stage.name for stage in dag_config.stages if stage.enabled],
+            worker_results,
+            dag_result.content,
+            None,
+            None,
+            [],
+            None,
+            None,
+            worker_results,
+            None,
+            None,
+            dag_result.stage_results,
+            dag_result.warnings,
         )
 
     def _log_run(self, result: OrchestrationResult) -> None:
@@ -891,6 +988,22 @@ class FuguLocalOrchestrator:
             return None
         verifiers = [role for role in self.config.roles if role.is_verifier]
         return verifiers[0] if verifiers else None
+
+    def _role_by_name(self, name: str) -> Optional[RoleConfig]:
+        for role in self.config.roles:
+            if role.name == name:
+                return role
+        return None
+
+    def _dag_stage_worker_result(self, output: StageOutput) -> WorkerResult:
+        role = self._role_by_name(output.role)
+        return WorkerResult(
+            role=f"dag:{output.stage}",
+            model=role.model if role is not None else "",
+            content=output.answer,
+            error=None if output.answer else (output.parse_error or "stage produced no answer"),
+            usage=output.usage,
+        )
 
     def _select_worker_roles(self, roles: List[RoleConfig], user_text: str) -> List[RoleConfig]:
         if self.config.orchestrator.selection_policy == "all":

@@ -1,0 +1,56 @@
+{
+  "models": [
+    {
+      "name": "echo-planner",
+      "backend": "echo",
+      "model": "planner-local-mock"
+    },
+    {
+      "name": "echo-solver",
+      "backend": "echo",
+      "model": "solver-local-mock"
+    },
+    {
+      "name": "echo-judge",
+      "backend": "echo",
+      "model": "judge-local-mock"
+    },
+    {
+      "name": "echo-critic",
+      "backend": "echo",
+      "model": "critic-local-mock"
+    },
+    {
+      "name": "echo-synth",
+      "backend": "echo",
+      "model": "synth-local-mock"
+    }
+  ],
+  "roles": [
+    {"name": "planner", "model": "echo-planner"},
+    {"name": "solver", "model": "echo-solver"},
+    {"name": "judge", "model": "echo-judge", "is_verifier": true},
+    {"name": "critic", "model": "echo-critic"},
+    {"name": "synthesizer", "model": "echo-synth", "is_synthesizer": true}
+  ],
+  "coordinator": {
+    "enabled": true,
+    "default_pattern": "sequential_dag",
+    "dag": {
+      "stages": [
+        {"name": "planner", "role": "planner"},
+        {"name": "solver", "role": "solver", "fanout": 2},
+        {"name": "verifier", "role": "judge"},
+        {"name": "critic", "role": "critic"},
+        {"name": "reviser", "role": "solver"},
+        {"name": "claim_judge", "role": "judge"},
+        {"name": "writer", "role": "synthesizer"}
+      ],
+      "max_stage_tokens": 1024
+    }
+  },
+  "orchestrator": {
+    "selection_policy": "all",
+    "temperature": 0.2
+  }
+}
