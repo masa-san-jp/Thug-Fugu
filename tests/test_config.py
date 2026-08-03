@@ -289,6 +289,238 @@ class CoordinatorConfigTests(unittest.TestCase):
             )
 
 
+def _dag_roles():
+    return [
+        {"name": "planner", "model": "m"},
+        {"name": "solver", "model": "m"},
+        {"name": "judge", "model": "m", "is_verifier": True},
+        {"name": "critic", "model": "m"},
+        {"name": "synthesizer", "model": "m", "is_synthesizer": True},
+    ]
+
+
+def _dag_stages():
+    return [
+        {"name": "planner", "role": "planner"},
+        {"name": "solver", "role": "solver", "fanout": 3},
+        {"name": "verifier", "role": "judge"},
+        {"name": "critic", "role": "critic"},
+        {"name": "reviser", "role": "solver"},
+        {"name": "claim_judge", "role": "judge"},
+        {"name": "writer", "role": "synthesizer"},
+    ]
+
+
+class DagConfigTests(unittest.TestCase):
+    def test_accepts_a_full_seven_stage_dag(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": _dag_roles(),
+                "coordinator": {"dag": {"stages": _dag_stages(), "max_stage_tokens": 512}},
+            }
+        )
+
+        self.assertEqual(len(config.coordinator.dag.stages), 7)
+        self.assertEqual(config.coordinator.dag.max_stage_tokens, 512)
+        solver_stage = next(s for s in config.coordinator.dag.stages if s.name == "solver")
+        self.assertEqual(solver_stage.fanout, 3)
+
+    def test_dag_defaults_to_no_stages(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+
+        self.assertEqual(config.coordinator.dag.stages, [])
+        self.assertIsNone(config.coordinator.dag.max_stage_tokens)
+
+    def test_rejects_unknown_stage_name(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {
+                        "dag": {"stages": [{"name": "not-a-real-stage", "role": "planner"}]}
+                    },
+                }
+            )
+
+    def test_rejects_unknown_role_reference(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {"dag": {"stages": [{"name": "planner", "role": "missing"}]}},
+                }
+            )
+
+    def test_rejects_duplicate_stage_name(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {
+                        "dag": {
+                            "stages": [
+                                {"name": "planner", "role": "planner"},
+                                {"name": "planner", "role": "critic"},
+                            ]
+                        }
+                    },
+                }
+            )
+
+    def test_rejects_fanout_on_non_solver_stage(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {
+                        "dag": {"stages": [{"name": "critic", "role": "critic", "fanout": 2}]}
+                    },
+                }
+            )
+
+    def test_rejects_non_positive_fanout(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {
+                        "dag": {"stages": [{"name": "solver", "role": "solver", "fanout": 0}]}
+                    },
+                }
+            )
+
+    def test_rejects_disabling_solver(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {
+                        "dag": {"stages": [{"name": "solver", "role": "solver", "enabled": False}]}
+                    },
+                }
+            )
+
+    def test_rejects_disabling_writer(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {
+                        "dag": {
+                            "stages": [{"name": "writer", "role": "synthesizer", "enabled": False}]
+                        }
+                    },
+                }
+            )
+
+    def test_accepts_disabling_planner_critic_reviser_claim_judge_verifier(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": _dag_roles(),
+                "coordinator": {
+                    "dag": {
+                        "stages": [
+                            {"name": "planner", "role": "planner", "enabled": False},
+                            {"name": "solver", "role": "solver", "fanout": 3},
+                            {"name": "verifier", "role": "judge", "enabled": False},
+                            {"name": "critic", "role": "critic", "enabled": False},
+                            {"name": "reviser", "role": "solver", "enabled": False},
+                            {"name": "claim_judge", "role": "judge", "enabled": False},
+                            {"name": "writer", "role": "synthesizer"},
+                        ]
+                    }
+                },
+            }
+        )
+
+        disabled = {s.name for s in config.coordinator.dag.stages if not s.enabled}
+        self.assertEqual(disabled, {"planner", "verifier", "critic", "reviser", "claim_judge"})
+
+    def test_rejects_non_positive_max_stage_tokens(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {"dag": {"stages": [], "max_stage_tokens": 0}},
+                }
+            )
+
+    def test_rejects_tool_calling_with_sequential_dag_default_pattern(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {
+                        "default_pattern": "sequential_dag",
+                        "dag": {"stages": _dag_stages()},
+                    },
+                    "tool_calling": {"enabled": True, "mode": "synthesizer_only"},
+                }
+            )
+
+    def test_rejects_tool_calling_with_sequential_dag_rule(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {
+                        "rules": [{"match": ["dag"], "pattern": "sequential_dag"}],
+                        "dag": {"stages": _dag_stages()},
+                    },
+                    "tool_calling": {"enabled": True, "mode": "synthesizer_only"},
+                }
+            )
+
+    def test_rejects_stages_missing_required_writer(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {"dag": {"stages": [{"name": "solver", "role": "solver"}]}},
+                }
+            )
+
+    def test_rejects_stages_missing_required_solver(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": _dag_roles(),
+                    "coordinator": {"dag": {"stages": [{"name": "writer", "role": "synthesizer"}]}},
+                }
+            )
+
+    def test_tool_calling_allowed_when_sequential_dag_not_selectable(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": _dag_roles(),
+                "coordinator": {"dag": {"stages": _dag_stages()}},
+                "tool_calling": {"enabled": True, "mode": "synthesizer_only"},
+            }
+        )
+
+        self.assertTrue(config.tool_calling.enabled)
+
+
 class RequestTimeoutConfigTests(unittest.TestCase):
     def test_request_timeout_defaults_to_none(self):
         config = config_from_dict(
