@@ -23,6 +23,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coordinator request so same-model roles don't collapse to identical output.
   Omitted by default; existing configs and requests are unaffected. Seeding is
   best-effort — backends are not required to honor it.
+- `scripts/evaluate_orchestration.py --repeats N`: stochastic repeats per
+  `(condition, case)` seeded from a single base seed via
+  `derive_seed(base_seed, "repeat#i")` (mutually exclusive with `--seeds`).
+  Each result row now records `repeat_index`, `seed_sent` (whether the seed
+  actually reached a real backend payload — always `false` for the offline
+  `echo` backend), per-worker `worker_outputs[].passed` (the task grader
+  applied to that worker's own output, for synthesizer damage/repair
+  analysis), and a `stage_results` placeholder for the future sequential-DAG
+  work. `summary.json` gained a deterministic paired-bootstrap 95% CI
+  (`paired`) between the first condition and every other condition.
+
+### Changed
+- `scripts/evaluate_orchestration.py` summary schema is now `schema_version:
+  3`. Per-condition `accuracy` is the mean of *per-task* pass rates
+  (`task_scores`), not the mean of every individual run — averaging over runs
+  instead of tasks silently double-counted whichever tasks got more
+  repeats/seeds. `accuracy_ci95` (run-level Wilson interval) and per-domain
+  `domains` are replaced by `accuracy_stderr` (task-level standard error) and
+  `by_domain` (task-level per-domain accuracy); `total_tokens` is renamed
+  `tokens_total`. Manifests and results from `schema_version` 1/2 can still be
+  rerun via `--rerun-manifest`.
 
 ## [0.1.0] - 2026-07-30
 
