@@ -13,7 +13,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 SUPPORTED_BACKENDS = {"ollama", "openai-compatible", "echo"}
 SUPPORTED_SELECTION_POLICIES = {"all", "keyword"}
 SUPPORTED_PATTERNS = {"direct", "role_split", "parallel_ensemble"}
-SUPPORTED_ENSEMBLE_VOTES = {"synth", "majority"}
+SUPPORTED_ENSEMBLE_VOTES = {"synth", "majority", "judge_tiebreak"}
 SUPPORTED_TOOL_CALLING_MODES = {"disabled", "synthesizer_only"}
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SUPPORTED_POOL_POLICIES = {"round_robin", "least_busy"}
@@ -92,6 +92,8 @@ class CoordinatorRule:
 class EnsembleConfig:
     n: int = 3
     vote: str = "synth"
+    normalize: bool = True
+    judge_role: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -327,6 +329,8 @@ def _ensemble_from_dict(raw: Any) -> EnsembleConfig:
     return EnsembleConfig(
         n=n if n is not None else 3,
         vote=_optional_str(obj, "vote") or "synth",
+        normalize=_optional_bool(obj, "normalize", default=True),
+        judge_role=_optional_str(obj, "judge_role"),
     )
 
 
@@ -379,6 +383,23 @@ def _validate_coordinator(config: FuguLocalConfig, model_names: set) -> None:
         raise ConfigError(
             "coordinator.verify.enabled=true requires coordinator.verify.role "
             "or a roles[] entry with is_verifier=true"
+        )
+    if (
+        coordinator.ensemble.judge_role is not None
+        and coordinator.ensemble.judge_role not in role_names
+    ):
+        raise ConfigError(
+            f"coordinator.ensemble.judge_role references unknown role "
+            f"'{coordinator.ensemble.judge_role}'"
+        )
+    if (
+        coordinator.ensemble.vote == "judge_tiebreak"
+        and coordinator.ensemble.judge_role is None
+        and not flagged_verifiers
+    ):
+        raise ConfigError(
+            "coordinator.ensemble.vote='judge_tiebreak' requires "
+            "coordinator.ensemble.judge_role or a roles[] entry with is_verifier=true"
         )
 
 

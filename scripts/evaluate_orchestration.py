@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from fugu_local import answers
 from fugu_local.backends import ChatMessage
 from fugu_local.config import FuguLocalConfig, load_config
 from fugu_local.orchestrator import FuguLocalOrchestrator, derive_seed
@@ -396,15 +397,19 @@ def _normalize_answer(text: str) -> str:
 
     This lets deterministic graders match equivalent answers such as ``H2O``,
     ``H_2O``, ``$\\text{H}_2\\text{O}$``, ``**H2O**``, and ``H₂O`` without adding
-    per-case special cases.
+    per-case special cases. LaTeX math delimiters (``$``, ``{}``, bare ``\\``)
+    are stripped here since they are unique to this grader; Markdown emphasis/
+    code-fence stripping and whitespace/case/prefix/number normalization
+    delegate to ``fugu_local.answers.normalize_answer`` (shared with the
+    orchestrator's ensemble voting) instead of duplicating that logic.
     """
 
     text = text.translate(_SUBSCRIPT_MAP).translate(_SUPERSCRIPT_MAP)
     text = re.sub(r"\\text\s*\{([^}]*)\}", r"\1", text)
     text = re.sub(r"\\[a-zA-Z]+", " ", text)
-    for char in "${}*`_\\":
+    for char in "${}\\":
         text = text.replace(char, "")
-    return text
+    return answers.normalize_answer(text)
 
 
 def _prepare_bundle(
