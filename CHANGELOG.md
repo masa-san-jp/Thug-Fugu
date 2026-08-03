@@ -16,6 +16,168 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional deterministic-answer normalization for Markdown, LaTeX, and Unicode
   subscript/superscript formatting.
 - Sanitized three-seed Phase 1 local comparison report and aggregate metrics.
+- Optional request seeding: `ChatRequest.seed` is passed through to the Ollama
+  (`options.seed`) and OpenAI-compatible (`seed`) backend payloads when set, and
+  a new `orchestrator.seed` config key (overridable per call via `chat(seed=...)`)
+  derives a distinct, deterministic seed per worker/verifier/synthesizer/
+  coordinator request so same-model roles don't collapse to identical output.
+  Omitted by default; existing configs and requests are unaffected. Seeding is
+  best-effort — backends are not required to honor it.
+- `scripts/evaluate_orchestration.py --repeats N`: stochastic repeats per
+  `(condition, case)` seeded from a single base seed via
+  `derive_seed(base_seed, "repeat#i")` (mutually exclusive with `--seeds`).
+  Each result row now records `repeat_index`, `seed_sent` (whether the seed
+  actually reached a real backend payload — always `false` for the offline
+  `echo` backend), per-worker `worker_outputs[].passed` (the task grader
+  applied to that worker's own output, for synthesizer damage/repair
+  analysis), and a `stage_results` placeholder for the future sequential-DAG
+  work. `summary.json` gained a deterministic paired-bootstrap 95% CI
+  (`paired`) between the first condition and every other condition.
+- New `src/fugu_local/answers.py` module: `normalize_answer` (Unicode NFKC,
+  Markdown/code-fence stripping, answer-prefix removal, whitespace/case
+  normalization, and number-format normalization for strings that are
+  entirely numeric), `extract_final_answer`, `cluster_answers`, and
+  `majority_vote`. Shared by ensemble voting and the evaluation harness's
+  graders instead of each maintaining its own copy.
+- Ensemble voting gains **normalized majority** voting (`coordinator.
+  ensemble.normalize`, default `true`): equivalent answers like `42`,
+  `**42**`, and `Answer: 42` now count as the same vote instead of splitting
+  votes and effectively returning whichever candidate happened to come first.
+  Set `normalize: false` to restore the previous exact-match voting.
+- New `coordinator.ensemble.vote: "judge_tiebreak"` mode: runs normalized
+  majority voting, and only when the winning cluster is tied with another
+  makes one additional call to a judge role (`coordinator.ensemble.judge_role`,
+  or a `roles[]` entry with `is_verifier: true`) to pick between the tied
+  candidates. Falls back to the normalized-majority tie-break if the judge
+  call fails or returns an unparseable choice.
+- `OrchestrationResult.vote_summary` (cluster count, winning vote count,
+  whether normalization was applied, whether the judge was called) is now
+  recorded for `parallel_ensemble` runs and included in structured run logs.
+- New `coordinator.default_pattern`/`rules[].pattern` value `sequential_dag`:
+  a fixed 7-stage inference DAG (`planner` → `solver` → `verifier` →
+  `critic` → `reviser` → `claim_judge` → `writer`, `src/fugu_local/
+  stages.py`) where each stage's prompt is built from the accumulated,
+  structured output of every prior completed stage instead of all roles
+  receiving the same input (`src/fugu_local/pipeline.py`,
+  `orchestrator.py::_run_sequential_dag`). Stage responses are parsed
+  leniently (`stages.parse_stage_output`); parse failures degrade to the raw
+  text instead of raising. Configured via `coordinator.dag.stages[]`
+  (`name`, `role`, `enabled`, `fanout`) and `coordinator.dag.
+  max_stage_tokens`; `solver` and `writer` cannot be disabled, `fanout` is
+  only valid on `solver`, and disabling `critic` also skips `reviser` (its
+  input contract requires a critique). Disabling any other stage applies a
+  documented per-stage bypass rule rather than passing input straight
+  through. Not combinable with `tool_calling.enabled` and not eligible for
+  true token streaming (falls back to buffered SSE). `OrchestrationResult`
+  gains `stage_results` (every stage call, in order) and `warnings`
+  (e.g. deadline exceeded mid-DAG). See
+  `docs/design/sequential-inference-dag.md` and
+  `examples/fugu-local.sequential-dag.json`.
+- New top-level `verify.checks` config backs the `sequential_dag` verifier
+  stage's LLM self-report with in-process mechanical checks
+  (`src/fugu_local/verifiers.py`): `verify.checks.constraint` (regex,
+  `min_length`/`max_length`, `numeric_range`, `require_json`) and
+  `verify.checks.citation` (does a claim's evidence text appear verbatim in
+  the DAG's accumulated context). Both are disabled by default and are
+  individually no-ops when disabled; when a check is enabled and fails, it
+  overrides the LLM's own `passed`/`unavailable` verdict for that claim.
+  Neither check runs a subprocess, opens a network connection, or writes to
+  disk; a subprocess-based code-execution verifier was evaluated and
+  rejected as unsafe to implement without an external, human-gated sandbox
+  (see `docs/operations/security-profile.md`).
+- New `scripts/benchmark_cluster.py`: measures throughput (req/s), latency
+  p50/p95/p99, and request success rate for a `model_pool`, reusing the
+  existing `ModelRouter`/failover machinery -- no separate "cluster mode".
+  Optional `--outage-member <endpoint>` re-runs the same concurrency sweep
+  with one member simulated as stopped, producing a baseline-vs-degraded
+  success-rate/latency comparison for the router's failover behavior.
+  Deliberately reports no quality/accuracy metric of any kind; hardware/
+  power metadata is manual-input only via `--hardware-json` (never
+  auto-measured). See `docs/operations/multi-node-benchmark.md`.
+- New `scripts/analyze_results.py`: error-correlation and complementarity
+  analysis of a `results.jsonl` produced by `evaluate_orchestration.py`.
+  Computes a task×condition correctness matrix; condition-pair and
+  worker-pair phi coefficients (with a deterministic, fixed-seed bootstrap
+  95% CI) to check whether errors are actually uncorrelated; oracle upper
+  bound (fraction of tasks where at least one worker was right); the
+  synthesizer's conditional damage rate (right-among-workers but
+  wrong-overall) and repair rate (wrong-among-all-workers but
+  right-overall); quality-per-1k-tokens and cost-per-correct; and a
+  by-domain breakdown of all of the above. Trusts the `passed`/
+  `worker_outputs[].passed` fields WP-1 already recorded instead of
+  re-applying task graders. Never raises on missing/old-format
+  `worker_outputs`: the affected metric becomes `null` and the reason is
+  recorded in `analysis.json.warnings`. `stage_contributions` (ablation
+  attribution) is wired for WP-7's future output but stays empty with a
+  warning until WP-7 exists. Writes `analysis.json` and `analysis.md`. See
+  `docs/operations/evaluation-harness.md`.
+- New `scripts/validate_tasks.py` (WP-2a): validates the hard-benchmark-v2
+  task schema (`family`/`difficulty`/`answer_type`/`grader.type`
+  allow-lists; rejects `exec` and rubric graders outright), cross-file
+  `id` uniqueness, a `gold` self-consistency check (does the task's own
+  grader accept its own `gold`), and the calibration/dev/test split's
+  structural rules (minimum sizes, per-family minimums, the 20% easy-task
+  cap). The task files themselves are WP-2b and require human review of
+  gold-answer correctness before use; this validator checks schema and
+  self-consistency only, never answer correctness, and never touches
+  `review_status`. See `docs/operations/benchmark-v2.md`.
+- WP-7 budget-matched / ablation comparison harness: separates "more
+  compute" from "orchestration itself helped" by pre-allocating a frozen
+  token/wall-clock budget instead of penalizing overage after the fact.
+  - `FuguLocalOrchestrator.chat()` gains a `request_timeout_seconds`
+    per-call override (mirrors the existing `seed` override), so a caller
+    can tighten the request deadline for one call without mutating the
+    orchestrator's config.
+  - New `scripts/make_budget_manifest.py`: computes each task family's
+    median token usage and median wall-clock time from a baseline
+    `results.jsonl` and writes a frozen, deterministic
+    `budget-manifest.json` (`budget = baseline median x coefficient`,
+    coefficient defaults to `1.0` and is recorded in the manifest).
+  - New `scripts/evaluate_orchestration.py --budget-manifest <path>`:
+    pre-allocates each case's family budget to `max_tokens`/
+    `request_timeout_seconds` before the call. Since prompt tokens and
+    mid-call timing aren't knowable in advance, a run whose actual usage
+    still exceeds its budget is recorded with `budget_exceeded: true` and
+    counted as incorrect regardless of what the grader said. `summary.json`
+    gains a `budget_filtered` auxiliary view (the same per-condition
+    metrics, computed only over runs that stayed within budget).
+  - New `scripts/make_ablation_configs.py`: generates one config per
+    disableable `sequential_dag` stage from a base DAG config (`solver`/
+    `writer` are never ablated), validating every generated config against
+    `fugu_local.config.config_from_dict` before writing any of them.
+  - New `scripts/run_phase2_comparison.sh` and `evals/phase2/configs/`
+    (conditions 1-5, plus a 7-cloud-reference template with no embedded
+    keys): drives Phase A (baseline measurement -> frozen budget manifest)
+    then Phase B (budget-matched and natural-configuration comparison
+    across every condition, including the auto-generated ablations).
+    Verified end-to-end against an `echo`-backend condition set (no real
+    network). See `docs/operations/phase2-comparison.md`.
+
+### Changed
+- **Breaking**: `coordinator.ensemble.vote: "majority"` now normalizes
+  answers before counting votes by default (`coordinator.ensemble.normalize`
+  defaults to `true`). Previously, votes were counted by exact string match,
+  so answers differing only in Markdown formatting, whitespace, or an
+  "Answer:" prefix silently split their votes. Set
+  `coordinator.ensemble.normalize: false` to restore the exact-match
+  behavior used before this release.
+- `scripts/evaluate_orchestration.py` summary schema is now `schema_version:
+  3`. Per-condition `accuracy` is the mean of *per-task* pass rates
+  (`task_scores`), not the mean of every individual run — averaging over runs
+  instead of tasks silently double-counted whichever tasks got more
+  repeats/seeds. `accuracy_ci95` (run-level Wilson interval) and per-domain
+  `domains` are replaced by `accuracy_stderr` (task-level standard error) and
+  `by_domain` (task-level per-domain accuracy); `total_tokens` is renamed
+  `tokens_total`. Manifests and results from `schema_version` 1/2 can still be
+  rerun via `--rerun-manifest`.
+- `scripts/evaluate_orchestration.py`'s deterministic-answer normalization
+  (`grader.normalize: true`) now delegates Markdown/code-fence stripping and
+  whitespace/case/number normalization to `fugu_local.answers.normalize_answer`
+  instead of a separate local implementation; LaTeX-specific handling stays
+  local. `normalize: true` graders are now also slightly more lenient (e.g.
+  an `exact` grader now matches case-insensitively, matching `contains` and
+  `regex`'s existing case-insensitive behavior) since the shared
+  normalization casefolds.
 
 ## [0.1.0] - 2026-07-30
 

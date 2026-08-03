@@ -10,10 +10,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from .stages import STAGE_NAMES
+
 SUPPORTED_BACKENDS = {"ollama", "openai-compatible", "echo"}
 SUPPORTED_SELECTION_POLICIES = {"all", "keyword"}
-SUPPORTED_PATTERNS = {"direct", "role_split", "parallel_ensemble"}
-SUPPORTED_ENSEMBLE_VOTES = {"synth", "majority"}
+SUPPORTED_PATTERNS = {"direct", "role_split", "parallel_ensemble", "sequential_dag"}
+DAG_FANOUT_STAGE = "solver"
+DAG_NON_DISABLEABLE_STAGES = {"solver", "writer"}
+SUPPORTED_ENSEMBLE_VOTES = {"synth", "majority", "judge_tiebreak"}
 SUPPORTED_TOOL_CALLING_MODES = {"disabled", "synthesizer_only"}
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 SUPPORTED_POOL_POLICIES = {"round_robin", "least_busy"}
@@ -77,6 +81,7 @@ class OrchestratorConfig:
     temperature: float = 0.2
     max_tokens: Optional[int] = None
     request_timeout_seconds: Optional[float] = None
+    seed: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +96,8 @@ class CoordinatorRule:
 class EnsembleConfig:
     n: int = 3
     vote: str = "synth"
+    normalize: bool = True
+    judge_role: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +108,53 @@ class VerifyConfig:
 
 
 @dataclass(frozen=True)
+class ConstraintCheckConfig:
+    """In-process constraint check applied to a DAG claim's text. No
+    subprocess, no network, no file I/O -- see WP-5 in
+    docs/plans/phase2-decision-implementation-plan.md."""
+
+    enabled: bool = False
+    regex: Optional[str] = None
+    min_length: Optional[int] = None
+    max_length: Optional[int] = None
+    numeric_range: Optional[List[float]] = None
+    require_json: bool = False
+
+
+@dataclass(frozen=True)
+class CitationCheckConfig:
+    """Checks that a claim's evidence text appears verbatim in the context
+    already available to the DAG (no external URL fetch)."""
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
+class ChecksConfig:
+    constraint: ConstraintCheckConfig = field(default_factory=ConstraintCheckConfig)
+    citation: CitationCheckConfig = field(default_factory=CitationCheckConfig)
+
+
+@dataclass(frozen=True)
+class VerifyChecksConfig:
+    checks: ChecksConfig = field(default_factory=ChecksConfig)
+
+
+@dataclass(frozen=True)
+class DagStageConfig:
+    name: str
+    role: str
+    enabled: bool = True
+    fanout: int = 1
+
+
+@dataclass(frozen=True)
+class DagConfig:
+    stages: List[DagStageConfig] = field(default_factory=list)
+    max_stage_tokens: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class CoordinatorConfig:
     enabled: bool = False
     meta_model: Optional[str] = None
@@ -108,6 +162,7 @@ class CoordinatorConfig:
     rules: List[CoordinatorRule] = field(default_factory=list)
     ensemble: EnsembleConfig = field(default_factory=EnsembleConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
+    dag: DagConfig = field(default_factory=DagConfig)
 
 
 @dataclass(frozen=True)
@@ -141,6 +196,7 @@ class FuguLocalConfig:
     tool_calling: ToolCallingConfig = field(default_factory=ToolCallingConfig)
     model_pools: List[ModelPoolConfig] = field(default_factory=list)
     server: ServerConfig = field(default_factory=ServerConfig)
+    verify: VerifyChecksConfig = field(default_factory=VerifyChecksConfig)
 
     def model_by_name(self) -> Dict[str, ModelConfig]:
         return {model.name: model for model in self.models}
@@ -177,6 +233,7 @@ def config_from_dict(raw: Mapping[str, Any]) -> FuguLocalConfig:
     tool_calling = _tool_calling_from_dict(raw.get("tool_calling", {}))
     model_pools = [_model_pool_from_dict(item) for item in _optional_list(raw, "model_pools")]
     server = _server_from_dict(raw.get("server", {}))
+    verify = _verify_checks_from_dict(raw.get("verify", {}))
     config = FuguLocalConfig(
         models=models,
         roles=roles,
@@ -185,6 +242,7 @@ def config_from_dict(raw: Mapping[str, Any]) -> FuguLocalConfig:
         tool_calling=tool_calling,
         model_pools=model_pools,
         server=server,
+        verify=verify,
     )
     validate_config(config)
     return config
@@ -241,6 +299,7 @@ def validate_config(config: FuguLocalConfig) -> None:
     _validate_coordinator(config, model_names)
     _validate_tool_calling(config.tool_calling)
     _validate_server(config.server)
+    _validate_verify_checks(config.verify)
 
 
 def _model_from_dict(raw: Any) -> ModelConfig:
@@ -283,6 +342,7 @@ def _orchestrator_from_dict(raw: Any) -> OrchestratorConfig:
         temperature=_optional_number(obj, "temperature", default=0.2),
         max_tokens=_optional_int(obj, "max_tokens", default=None),
         request_timeout_seconds=_optional_positive_number(obj, "request_timeout_seconds"),
+        seed=_optional_int(obj, "seed", default=None),
     )
 
 
@@ -293,6 +353,7 @@ def _coordinator_from_dict(raw: Any) -> CoordinatorConfig:
     rules = [_coordinator_rule_from_dict(item) for item in _optional_list(obj, "rules")]
     ensemble = _ensemble_from_dict(obj.get("ensemble", {}))
     verify = _verify_from_dict(obj.get("verify", {}))
+    dag = _dag_from_dict(obj.get("dag", {}))
     return CoordinatorConfig(
         enabled=_optional_bool(obj, "enabled", default=False),
         meta_model=_optional_str(obj, "meta_model"),
@@ -300,6 +361,7 @@ def _coordinator_from_dict(raw: Any) -> CoordinatorConfig:
         rules=rules,
         ensemble=ensemble,
         verify=verify,
+        dag=dag,
     )
 
 
@@ -325,6 +387,8 @@ def _ensemble_from_dict(raw: Any) -> EnsembleConfig:
     return EnsembleConfig(
         n=n if n is not None else 3,
         vote=_optional_str(obj, "vote") or "synth",
+        normalize=_optional_bool(obj, "normalize", default=True),
+        judge_role=_optional_str(obj, "judge_role"),
     )
 
 
@@ -338,6 +402,109 @@ def _verify_from_dict(raw: Any) -> VerifyConfig:
         max_retries=max_retries if max_retries is not None else 1,
         role=_optional_str(obj, "role"),
     )
+
+
+def _dag_from_dict(raw: Any) -> DagConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "coordinator.dag")
+    stages = [_dag_stage_from_dict(item) for item in _optional_list(obj, "stages")]
+    return DagConfig(
+        stages=stages,
+        max_stage_tokens=_optional_int(obj, "max_stage_tokens", default=None),
+    )
+
+
+def _dag_stage_from_dict(raw: Any) -> DagStageConfig:
+    obj = _required_object(raw, "coordinator.dag stage entry")
+    fanout = _optional_int(obj, "fanout", default=1)
+    return DagStageConfig(
+        name=_required_str(obj, "name"),
+        role=_required_str(obj, "role"),
+        enabled=_optional_bool(obj, "enabled", default=True),
+        fanout=fanout if fanout is not None else 1,
+    )
+
+
+def _verify_checks_from_dict(raw: Any) -> VerifyChecksConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "verify")
+    return VerifyChecksConfig(checks=_checks_from_dict(obj.get("checks", {})))
+
+
+def _checks_from_dict(raw: Any) -> ChecksConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "verify.checks")
+    return ChecksConfig(
+        constraint=_constraint_check_from_dict(obj.get("constraint", {})),
+        citation=_citation_check_from_dict(obj.get("citation", {})),
+    )
+
+
+def _constraint_check_from_dict(raw: Any) -> ConstraintCheckConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "verify.checks.constraint")
+    numeric_range_raw = obj.get("numeric_range")
+    numeric_range: Optional[List[float]] = None
+    if numeric_range_raw is not None:
+        if (
+            not isinstance(numeric_range_raw, list)
+            or len(numeric_range_raw) != 2
+            or any(
+                isinstance(item, bool) or not isinstance(item, (int, float))
+                for item in numeric_range_raw
+            )
+        ):
+            raise ConfigError(
+                "verify.checks.constraint.numeric_range must be a [min, max] list of two numbers"
+            )
+        numeric_range = [float(numeric_range_raw[0]), float(numeric_range_raw[1])]
+    return ConstraintCheckConfig(
+        enabled=_optional_bool(obj, "enabled", default=False),
+        regex=_optional_str(obj, "regex"),
+        min_length=_optional_int(obj, "min_length", default=None),
+        max_length=_optional_int(obj, "max_length", default=None),
+        numeric_range=numeric_range,
+        require_json=_optional_bool(obj, "require_json", default=False),
+    )
+
+
+def _citation_check_from_dict(raw: Any) -> CitationCheckConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "verify.checks.citation")
+    return CitationCheckConfig(enabled=_optional_bool(obj, "enabled", default=False))
+
+
+def _validate_verify_checks(config: VerifyChecksConfig) -> None:
+    constraint = config.checks.constraint
+    if constraint.min_length is not None and constraint.min_length < 0:
+        raise ConfigError("verify.checks.constraint.min_length must be non-negative")
+    if constraint.max_length is not None and constraint.max_length < 0:
+        raise ConfigError("verify.checks.constraint.max_length must be non-negative")
+    if (
+        constraint.min_length is not None
+        and constraint.max_length is not None
+        and constraint.min_length > constraint.max_length
+    ):
+        raise ConfigError("verify.checks.constraint.min_length must not exceed max_length")
+    if (
+        constraint.numeric_range is not None
+        and constraint.numeric_range[0] > constraint.numeric_range[1]
+    ):
+        raise ConfigError(
+            "verify.checks.constraint.numeric_range[0] must not exceed numeric_range[1]"
+        )
+    if constraint.regex is not None:
+        try:
+            re.compile(constraint.regex)
+        except re.error as exc:
+            raise ConfigError(
+                f"verify.checks.constraint.regex is not a valid regular expression: {exc}"
+            ) from exc
 
 
 def _validate_coordinator(config: FuguLocalConfig, model_names: set) -> None:
@@ -377,6 +544,71 @@ def _validate_coordinator(config: FuguLocalConfig, model_names: set) -> None:
         raise ConfigError(
             "coordinator.verify.enabled=true requires coordinator.verify.role "
             "or a roles[] entry with is_verifier=true"
+        )
+    if (
+        coordinator.ensemble.judge_role is not None
+        and coordinator.ensemble.judge_role not in role_names
+    ):
+        raise ConfigError(
+            f"coordinator.ensemble.judge_role references unknown role "
+            f"'{coordinator.ensemble.judge_role}'"
+        )
+    if (
+        coordinator.ensemble.vote == "judge_tiebreak"
+        and coordinator.ensemble.judge_role is None
+        and not flagged_verifiers
+    ):
+        raise ConfigError(
+            "coordinator.ensemble.vote='judge_tiebreak' requires "
+            "coordinator.ensemble.judge_role or a roles[] entry with is_verifier=true"
+        )
+    _validate_dag(config, role_names)
+
+
+def _validate_dag(config: FuguLocalConfig, role_names: set) -> None:
+    dag = config.coordinator.dag
+    seen_names: set = set()
+    for stage in dag.stages:
+        if stage.name not in STAGE_NAMES:
+            raise ConfigError(
+                f"Unsupported coordinator.dag stage name '{stage.name}'. "
+                f"Supported: {sorted(STAGE_NAMES)}"
+            )
+        if stage.name in seen_names:
+            raise ConfigError(f"Duplicate coordinator.dag stage name '{stage.name}'")
+        seen_names.add(stage.name)
+        if stage.role not in role_names:
+            raise ConfigError(
+                f"coordinator.dag stage '{stage.name}' references unknown role '{stage.role}'"
+            )
+        if stage.fanout < 1:
+            raise ConfigError(f"coordinator.dag stage '{stage.name}'.fanout must be positive")
+        if stage.name != DAG_FANOUT_STAGE and stage.fanout != 1:
+            raise ConfigError(
+                f"coordinator.dag stage '{stage.name}' sets fanout, but fanout only "
+                f"applies to the '{DAG_FANOUT_STAGE}' stage"
+            )
+        if not stage.enabled and stage.name in DAG_NON_DISABLEABLE_STAGES:
+            raise ConfigError(
+                f"coordinator.dag stage '{stage.name}' cannot be disabled (enabled=false)"
+            )
+    if dag.stages:
+        for required in sorted(DAG_NON_DISABLEABLE_STAGES):
+            if required not in seen_names:
+                raise ConfigError(
+                    f"coordinator.dag.stages must include a '{required}' stage entry "
+                    "(it cannot be disabled or omitted)"
+                )
+    if dag.max_stage_tokens is not None and dag.max_stage_tokens <= 0:
+        raise ConfigError("coordinator.dag.max_stage_tokens must be positive when provided")
+
+    sequential_dag_selectable = config.coordinator.default_pattern == "sequential_dag" or any(
+        rule.pattern == "sequential_dag" for rule in config.coordinator.rules
+    )
+    if sequential_dag_selectable and config.tool_calling.enabled:
+        raise ConfigError(
+            "tool_calling.enabled=true cannot be combined with a coordinator "
+            "default_pattern/rule that selects 'sequential_dag'"
         )
 
 

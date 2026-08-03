@@ -332,6 +332,118 @@ class BackendToolCallTests(unittest.TestCase):
         self.assertTrue(response.tool_calls[0]["id"].startswith("call_local_"))
 
 
+class SeedPayloadTests(unittest.TestCase):
+    def test_ollama_payload_includes_seed_when_set(self):
+        backend = OllamaBackend(
+            ModelConfig(
+                name="local",
+                backend="ollama",
+                model="mock",
+                base_url="http://localhost:11434",
+            )
+        )
+        payload = {"message": {"content": "ok"}}
+
+        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)) as urlopen:
+            backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")], seed=42))
+
+        request_payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_payload["options"]["seed"], 42)
+
+    def test_openai_payload_includes_seed_when_set(self):
+        backend = OpenAICompatibleBackend(
+            ModelConfig(
+                name="local",
+                backend="openai-compatible",
+                model="mock",
+                base_url="http://localhost:1234",
+            )
+        )
+        payload = {"choices": [{"message": {"content": "ok"}}]}
+
+        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)) as urlopen:
+            backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")], seed=42))
+
+        request_payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(request_payload["seed"], 42)
+
+    def test_payload_omits_seed_when_none(self):
+        ollama = OllamaBackend(
+            ModelConfig(
+                name="local",
+                backend="ollama",
+                model="mock",
+                base_url="http://localhost:11434",
+            )
+        )
+        openai_compatible = OpenAICompatibleBackend(
+            ModelConfig(
+                name="local",
+                backend="openai-compatible",
+                model="mock",
+                base_url="http://localhost:1234",
+            )
+        )
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            return_value=JsonResponse({"message": {"content": "ok"}}),
+        ) as urlopen:
+            ollama.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
+        ollama_payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertNotIn("seed", ollama_payload["options"])
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            return_value=JsonResponse({"choices": [{"message": {"content": "ok"}}]}),
+        ) as urlopen:
+            openai_compatible.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
+        openai_payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertNotIn("seed", openai_payload)
+
+    def test_stream_payload_includes_seed_when_set(self):
+        ollama = OllamaBackend(
+            ModelConfig(
+                name="local",
+                backend="ollama",
+                model="mock",
+                base_url="http://localhost:11434",
+            )
+        )
+        openai_compatible = OpenAICompatibleBackend(
+            ModelConfig(
+                name="local",
+                backend="openai-compatible",
+                model="mock",
+                base_url="http://localhost:1234",
+            )
+        )
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            return_value=StreamResponse([{"message": {"content": "hi"}, "done": True}]),
+        ) as urlopen:
+            list(
+                ollama.stream_chat(
+                    ChatRequest(model="mock", messages=[ChatMessage("user", "hi")], seed=7)
+                )
+            )
+        ollama_payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(ollama_payload["options"]["seed"], 7)
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            return_value=RawStreamResponse([b"data: [DONE]\n"]),
+        ) as urlopen:
+            list(
+                openai_compatible.stream_chat(
+                    ChatRequest(model="mock", messages=[ChatMessage("user", "hi")], seed=7)
+                )
+            )
+        openai_payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(openai_payload["seed"], 7)
+
+
 class StreamingBackendTests(unittest.TestCase):
     def test_ollama_stream_maps_deltas_finish_and_usage(self):
         backend = OllamaBackend(

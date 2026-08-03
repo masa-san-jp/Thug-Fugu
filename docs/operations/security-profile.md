@@ -84,3 +84,17 @@ Potential future work:
 ## Error redaction
 
 Backend HTTP response bodies are redacted from raised backend errors and HTTP responses because local LLM servers can echo prompts, completions, request metadata, or credentials in error bodies. Error messages keep concise diagnostics such as status code and backend host/path, but drop query strings, fragments, and raw response bodies.
+
+## Code execution verification is not implemented
+
+The `sequential_dag` verifier stage (`docs/design/sequential-inference-dag.md`) supports its LLM self-report with in-process mechanical checks (`src/fugu_local/verifiers.py`: `ConstraintVerifier` for regex/length/numeric-range/JSON-parseability, `CitationVerifier` for in-context evidence matching). Neither check executes model-generated code, opens a network socket, or writes to disk.
+
+A `PythonExecVerifier` that runs model-generated code via `subprocess` was considered and rejected (WP-5, `docs/plans/phase2-decision-implementation-plan.md`). Restricting a subprocess with `python -I -S`, a temporary directory, and a trimmed environment does not stop generated code from reading or deleting arbitrary files, making outbound network connections, spawning further processes, or exhausting CPU/memory/process-count limits — and making the interpreter unreachable from the HTTP server does not help, since a local CLI invocation already carries the invoking user's full permissions. WP-2 also scopes the Phase 2 decision-set grader to deterministic checks only (`docs/plans/phase2-decision-implementation-plan.md` §3.3), so code execution verification is not required for the Phase 2 Go/Pivot/No-Go decision.
+
+Code execution verification must not be implemented until **all** of the following hold, and even then only as a separate, explicitly human-gated proposal:
+
+- Execution runs inside an OS-level sandbox (e.g. a container) with network access blocked, a read-only filesystem, a non-privileged user, and CPU/memory/process-count limits all configured.
+- Execution goes only through a sandbox runner the user supplies and configures externally; this package must never invoke `subprocess` directly for model-generated code.
+- The default tool registry (`src/fugu_local/tools.py`) is not extended to add it.
+- It cannot be enabled from the HTTP server request path.
+- Whether to adopt it at all is a HUMAN GATE decision (`docs/plans/phase2-decision-implementation-plan.md` §0.6), not something an agent decides unilaterally.

@@ -1,39 +1,65 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from scripts import evaluate_orchestration as eval_script
 
-from fugu_local.config import load_config
+from fugu_local.config import config_from_dict, load_config
+
+
+class FakeWorkerResult:
+    def __init__(self, role, model, content, *, ok=True, usage=None):
+        self.role = role
+        self.model = model
+        self.content = content
+        self.ok = ok
+        self.usage = usage
+
+
+class FakeUsage:
+    def __init__(self, prompt_tokens, completion_tokens, total_tokens):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.total_tokens = total_tokens
 
 
 class FakeOrchestrator:
     def __init__(self, config):
         self.config = config
+        self.calls = []
+        self.budget_calls = []
 
-    def chat(self, messages, temperature=None):
+    def chat(
+        self,
+        messages,
+        temperature=None,
+        seed=None,
+        max_tokens=None,
+        request_timeout_seconds=None,
+    ):
+        self.calls.append(seed)
+        self.budget_calls.append((max_tokens, request_timeout_seconds))
         prompt = messages[-1].content
         if "2 + 3" in prompt:
             content = "5"
         else:
             content = "Paris"
-        worker = type("Worker", (), {})()
         result = type("Result", (), {})()
         result.content = content
         result.pattern = "direct"
-        result.worker_results = [worker]
+        result.worker_results = [
+            FakeWorkerResult(
+                "solver",
+                "mock",
+                content,
+                usage=FakeUsage(2, 3, 5),
+            )
+        ]
         result.selected_roles = ["solver"]
-        result.usage = type(
-            "Usage",
-            (),
-            {
-                "prompt_tokens": 2,
-                "completion_tokens": 3,
-                "total_tokens": 5,
-            },
-        )()
+        result.usage = FakeUsage(2, 3, 5)
         return result
 
 
@@ -188,9 +214,10 @@ class EvaluateOrchestrationTests(unittest.TestCase):
                 self.assertTrue((output / name).exists(), name)
 
             manifest = json.loads((output / "manifest.json").read_text())
-            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(manifest["schema_version"], 3)
             self.assertEqual(manifest["seed"], 42)
             self.assertEqual(manifest["seeds"], [42, 43])
+            self.assertEqual(manifest["repeats"], 1)
             self.assertEqual(manifest["temperature_override"], 0.1)
             self.assertEqual(manifest["hardware"]["gpu"], "test-gpu")
             self.assertEqual(
@@ -205,9 +232,17 @@ class EvaluateOrchestrationTests(unittest.TestCase):
             row = json.loads(result_lines[0])
             self.assertEqual(row["content"], "Paris")
             self.assertEqual(row["usage"]["total_tokens"], 5)
+            self.assertEqual(row["repeat_index"], 0)
+            self.assertFalse(row["seed_sent"])  # condition's only model is backend=echo
+            self.assertEqual(row["worker_outputs"][0]["role"], "solver")
+            self.assertTrue(row["worker_outputs"][0]["passed"])
+            self.assertEqual(row["stage_results"], [])
             summary = json.loads((output / "summary.json").read_text())
-            self.assertEqual(summary["conditions"]["single"]["total_tokens"], 10)
+            self.assertEqual(summary["schema_version"], 3)
+            self.assertEqual(summary["sample_unit"], "unique_task")
+            self.assertEqual(summary["conditions"]["single"]["tokens_total"], 10)
             self.assertEqual(summary["conditions"]["single"]["seeds"], [42, 43])
+            self.assertEqual(summary["conditions"]["single"]["task_scores"], {"capital": 1.0})
 
             with mock.patch.object(eval_script, "FuguLocalOrchestrator", FakeOrchestrator):
                 rerun_code = eval_script.main(
@@ -229,13 +264,19 @@ class EvaluateOrchestrationTests(unittest.TestCase):
             rerun_row = json.loads((rerun_output / "results.jsonl").read_text().splitlines()[0])
             self.assertEqual(rerun_row["content"], "Paris")
 
-    def test_summary_groups_domains_and_reports_uncertainty(self):
+    def test_accuracy_uses_task_level_mean(self):
+        # m1 has one pass and one fail across its two repeats -> task score 0.5.
+        # q1 has a single repeat that passes -> task score 1.0. The condition's
+        # accuracy is the mean of *task* scores (0.75), not the mean of the
+        # three individual runs (2/3 = 0.6667) -- that run-level mean is what
+        # WP-1 replaces, since it double-counts tasks with more repeats/seeds.
         rows = [
             {
                 "condition": "A",
                 "case_id": "m1",
                 "domain": "math",
-                "seed": 1,
+                "seed": 0,
+                "repeat_index": 0,
                 "passed": True,
                 "wall_ms": 10,
                 "error": "",
@@ -245,7 +286,8 @@ class EvaluateOrchestrationTests(unittest.TestCase):
                 "condition": "A",
                 "case_id": "m1",
                 "domain": "math",
-                "seed": 2,
+                "seed": 0,
+                "repeat_index": 1,
                 "passed": False,
                 "wall_ms": 20,
                 "error": "",
@@ -255,7 +297,8 @@ class EvaluateOrchestrationTests(unittest.TestCase):
                 "condition": "A",
                 "case_id": "q1",
                 "domain": "qa",
-                "seed": 1,
+                "seed": 0,
+                "repeat_index": 0,
                 "passed": True,
                 "wall_ms": 30,
                 "error": "",
@@ -263,17 +306,264 @@ class EvaluateOrchestrationTests(unittest.TestCase):
             },
         ]
 
-        metrics = eval_script._summarize(rows)["conditions"]["A"]
+        summary = eval_script._summarize(rows, repeats=2)
+        metrics = summary["conditions"]["A"]
 
+        self.assertEqual(summary["schema_version"], 3)
+        self.assertEqual(summary["sample_unit"], "unique_task")
+        self.assertEqual(summary["n_tasks"], 2)
+        self.assertEqual(summary["repeats"], 2)
+        self.assertEqual(metrics["task_scores"], {"m1": 0.5, "q1": 1.0})
+        self.assertEqual(metrics["accuracy"], 0.75)
+        self.assertEqual(metrics["by_domain"], {"math": 0.5, "qa": 1.0})
+        self.assertEqual(metrics["tokens_total"], 12)
         self.assertEqual(metrics["runs"], 3)
         self.assertEqual(metrics["unique_cases"], 2)
-        self.assertEqual(metrics["seeds"], [1, 2])
-        self.assertEqual(metrics["accuracy"], 0.6667)
-        self.assertEqual(metrics["total_tokens"], 12)
-        self.assertEqual(set(metrics["domains"]), {"math", "qa"})
-        self.assertEqual(metrics["domains"]["math"]["accuracy"], 0.5)
-        self.assertLess(metrics["accuracy_ci95"][0], metrics["accuracy"])
-        self.assertGreater(metrics["accuracy_ci95"][1], metrics["accuracy"])
+        self.assertEqual(metrics["seeds"], [0])
+        self.assertGreater(metrics["accuracy_stderr"], 0.0)
+
+    def test_repeats_are_aggregated_per_task(self):
+        rows = [
+            {
+                "condition": "A",
+                "case_id": "c1",
+                "domain": "math",
+                "seed": 0,
+                "repeat_index": i,
+                "passed": passed,
+                "wall_ms": 1.0,
+                "error": "",
+                "usage": None,
+            }
+            for i, passed in enumerate([True, False, True, False])
+        ]
+
+        summary = eval_script._summarize(rows, repeats=4)
+
+        self.assertEqual(summary["conditions"]["A"]["task_scores"]["c1"], 0.5)
+        self.assertEqual(summary["repeats"], 4)
+
+    def test_repeats_with_multiple_seeds_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            eval_script.main(
+                [
+                    "--cases",
+                    "unused.jsonl",
+                    "--condition",
+                    "A=unused.json",
+                    "--repeats",
+                    "2",
+                    "--seeds",
+                    "1,2",
+                    "--csv",
+                    "unused.csv",
+                    "--summary",
+                    "unused.json",
+                ]
+            )
+
+    def test_paired_bootstrap_ci_is_deterministic(self):
+        first = eval_script._paired_bootstrap_ci([0.1, -0.2, 0.3, 0.0])
+        second = eval_script._paired_bootstrap_ci([0.1, -0.2, 0.3, 0.0])
+
+        self.assertEqual(first, second)
+
+    def test_paired_comparison_reports_baseline_vs_candidate(self):
+        rows = [
+            {
+                "condition": "baseline",
+                "case_id": "c1",
+                "domain": "math",
+                "seed": 0,
+                "repeat_index": 0,
+                "passed": False,
+                "wall_ms": 1.0,
+                "error": "",
+                "usage": None,
+            },
+            {
+                "condition": "candidate",
+                "case_id": "c1",
+                "domain": "math",
+                "seed": 0,
+                "repeat_index": 0,
+                "passed": True,
+                "wall_ms": 1.0,
+                "error": "",
+                "usage": None,
+            },
+        ]
+
+        summary = eval_script._summarize(rows, repeats=1)
+
+        self.assertEqual(len(summary["paired"]), 1)
+        comparison = summary["paired"][0]
+        self.assertEqual(comparison["baseline"], "baseline")
+        self.assertEqual(comparison["candidate"], "candidate")
+        self.assertEqual(comparison["n_tasks"], 1)
+        self.assertEqual(comparison["n_excluded"], 0)
+        self.assertEqual(comparison["mean_diff"], 1.0)
+        self.assertEqual(comparison["method"], "paired_bootstrap")
+
+    def test_seed_sent_flag_is_false_for_echo_backend(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "solver", "model": "m"}],
+            }
+        )
+        orchestrator = FakeOrchestrator(config)
+        case = eval_script.EvalCase(
+            case_id="capital",
+            prompt="capital?",
+            grader={"type": "contains", "value": "Paris"},
+        )
+        condition = eval_script.Condition(label="A", config_path=Path("unused.json"))
+
+        row = eval_script._run_case(
+            condition, orchestrator, case, seed=0, repeat_index=0, repeat_seed=0
+        )
+
+        self.assertFalse(row["seed_sent"])
+
+    def test_seed_sent_flag_is_true_for_ollama_backend(self):
+        config = config_from_dict(
+            {
+                "models": [
+                    {
+                        "name": "m",
+                        "backend": "ollama",
+                        "model": "mock",
+                        "base_url": "http://localhost:11434",
+                    }
+                ],
+                "roles": [{"name": "solver", "model": "m"}],
+            }
+        )
+        orchestrator = FakeOrchestrator(config)
+        case = eval_script.EvalCase(
+            case_id="capital",
+            prompt="capital?",
+            grader={"type": "contains", "value": "Paris"},
+        )
+        condition = eval_script.Condition(label="A", config_path=Path("unused.json"))
+
+        row = eval_script._run_case(
+            condition, orchestrator, case, seed=0, repeat_index=0, repeat_seed=0
+        )
+
+        self.assertTrue(row["seed_sent"])
+
+    def test_worker_outputs_include_per_worker_passed(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [
+                    {"name": "planner", "model": "m"},
+                    {"name": "coder", "model": "m"},
+                ],
+            }
+        )
+
+        class MultiWorkerOrchestrator:
+            def __init__(self, config):
+                self.config = config
+
+            def chat(
+                self,
+                messages,
+                temperature=None,
+                seed=None,
+                max_tokens=None,
+                request_timeout_seconds=None,
+            ):
+                result = type("Result", (), {})()
+                result.content = "final"
+                result.pattern = "role_split"
+                result.worker_results = [
+                    FakeWorkerResult("planner", "m", "final"),
+                    FakeWorkerResult("coder", "m", "wrong"),
+                ]
+                result.selected_roles = ["planner", "coder"]
+                result.usage = None
+                return result
+
+        orchestrator = MultiWorkerOrchestrator(config)
+        case = eval_script.EvalCase(
+            case_id="c1", prompt="p", grader={"type": "exact", "value": "final"}
+        )
+        condition = eval_script.Condition(label="A", config_path=Path("unused.json"))
+
+        row = eval_script._run_case(
+            condition, orchestrator, case, seed=0, repeat_index=0, repeat_seed=0
+        )
+
+        outputs = {output["role"]: output for output in row["worker_outputs"]}
+        self.assertTrue(outputs["planner"]["passed"])
+        self.assertFalse(outputs["coder"]["passed"])
+
+    def test_legacy_manifest_schema_can_be_rerun(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "legacy"
+            inputs_dir = output / "inputs"
+            inputs_dir.mkdir(parents=True)
+            cases_snapshot = inputs_dir / "cases.jsonl"
+            cases_snapshot.write_text(
+                json.dumps(
+                    {
+                        "id": "capital",
+                        "prompt": "capital?",
+                        "grader": {"type": "contains", "value": "Paris"},
+                    }
+                )
+                + "\n"
+            )
+            config_snapshot = inputs_dir / "01-single.json"
+            config_snapshot.write_text(
+                json.dumps(
+                    {
+                        "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                        "roles": [{"name": "solver", "model": "m"}],
+                    }
+                )
+            )
+            manifest_path = output / "manifest.json"
+            manifest = {
+                "schema_version": 2,
+                "seed": 7,
+                "seeds": [7],
+                "temperature_override": None,
+                "cases": {
+                    "source_path": str(root / "does-not-exist.jsonl"),
+                    "path": "inputs/cases.jsonl",
+                    "sha256": eval_script._sha256(cases_snapshot),
+                    "count": 1,
+                },
+                "conditions": [
+                    {
+                        "label": "single",
+                        "source_config_path": str(root / "does-not-exist.json"),
+                        "config_path": "inputs/01-single.json",
+                        "config_sha256": eval_script._sha256(config_snapshot),
+                        "metadata": {},
+                    }
+                ],
+                "hardware": {},
+            }
+            manifest_path.write_text(json.dumps(manifest))
+            rerun_output = root / "legacy-rerun"
+
+            with mock.patch.object(eval_script, "FuguLocalOrchestrator", FakeOrchestrator):
+                code = eval_script.main(
+                    ["--rerun-manifest", str(manifest_path), "--output-dir", str(rerun_output)]
+                )
+
+            self.assertEqual(code, 0)
+            rerun_manifest = json.loads((rerun_output / "manifest.json").read_text())
+            self.assertEqual(rerun_manifest["schema_version"], 3)
+            self.assertEqual(rerun_manifest["repeats"], 1)
+            self.assertEqual(rerun_manifest["seeds"], [7])
 
     def test_phase1_fixtures_validate(self):
         root = Path("evals/phase1")
@@ -290,6 +580,241 @@ class EvaluateOrchestrationTests(unittest.TestCase):
                 config = load_config(str(path))
                 self.assertTrue(config.models)
                 self.assertTrue(config.roles)
+
+
+class BudgetManifestHarnessTests(unittest.TestCase):
+    def _config(self):
+        return config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "solver", "model": "m"}],
+            }
+        )
+
+    def _case(self):
+        return eval_script.EvalCase(
+            case_id="c1", prompt="2 + 3", grader={"type": "exact", "value": "5"}
+        )
+
+    def _condition(self):
+        return eval_script.Condition(label="A", config_path=Path("unused.json"))
+
+    def test_budget_manifest_allocates_max_tokens_before_execution(self):
+        orchestrator = FakeOrchestrator(self._config())
+
+        eval_script._run_case(
+            self._condition(),
+            orchestrator,
+            self._case(),
+            seed=0,
+            repeat_index=0,
+            repeat_seed=0,
+            token_budget=128,
+            wall_clock_budget_ms=5000,
+        )
+
+        self.assertEqual(orchestrator.budget_calls, [(128, 5.0)])
+
+    def test_no_budget_leaves_max_tokens_and_timeout_unset(self):
+        orchestrator = FakeOrchestrator(self._config())
+
+        eval_script._run_case(
+            self._condition(), orchestrator, self._case(), seed=0, repeat_index=0, repeat_seed=0
+        )
+
+        self.assertEqual(orchestrator.budget_calls, [(None, None)])
+
+    def test_budget_wall_clock_is_enforced_via_deadline(self):
+        class SlowFakeOrchestrator(FakeOrchestrator):
+            def chat(
+                self,
+                messages,
+                temperature=None,
+                seed=None,
+                max_tokens=None,
+                request_timeout_seconds=None,
+            ):
+                time.sleep(0.02)
+                return super().chat(
+                    messages,
+                    temperature=temperature,
+                    seed=seed,
+                    max_tokens=max_tokens,
+                    request_timeout_seconds=request_timeout_seconds,
+                )
+
+        orchestrator = SlowFakeOrchestrator(self._config())
+
+        row = eval_script._run_case(
+            self._condition(),
+            orchestrator,
+            self._case(),
+            seed=0,
+            repeat_index=0,
+            repeat_seed=0,
+            wall_clock_budget_ms=1.0,
+        )
+
+        self.assertTrue(row["budget_exceeded"])
+        self.assertFalse(row["passed"])
+
+    def test_budget_exceeded_runs_count_as_incorrect(self):
+        # FakeOrchestrator reports usage total_tokens=5 (FakeUsage(2, 3, 5))
+        # and content "5", which the grader would otherwise mark correct.
+        orchestrator = FakeOrchestrator(self._config())
+
+        row = eval_script._run_case(
+            self._condition(),
+            orchestrator,
+            self._case(),
+            seed=0,
+            repeat_index=0,
+            repeat_seed=0,
+            token_budget=1,
+        )
+
+        self.assertTrue(row["budget_exceeded"])
+        self.assertFalse(row["passed"])
+
+    def test_within_budget_run_keeps_graded_result(self):
+        orchestrator = FakeOrchestrator(self._config())
+
+        row = eval_script._run_case(
+            self._condition(),
+            orchestrator,
+            self._case(),
+            seed=0,
+            repeat_index=0,
+            repeat_seed=0,
+            token_budget=1000,
+            wall_clock_budget_ms=60000,
+        )
+
+        self.assertFalse(row["budget_exceeded"])
+        self.assertTrue(row["passed"])
+
+    def test_summary_includes_budget_filtered_view(self):
+        rows = [
+            {
+                "condition": "A",
+                "case_id": "t1",
+                "domain": "math",
+                "seed": 0,
+                "passed": True,
+                "wall_ms": 10.0,
+                "usage": None,
+                "error": "",
+                "budget_exceeded": False,
+            },
+            {
+                "condition": "A",
+                "case_id": "t2",
+                "domain": "math",
+                "seed": 0,
+                "passed": False,
+                "wall_ms": 10.0,
+                "usage": None,
+                "error": "",
+                "budget_exceeded": True,
+            },
+        ]
+
+        summary = eval_script._summarize(rows)
+
+        self.assertIn("budget_filtered", summary)
+        self.assertEqual(summary["budget_filtered"]["A"]["unique_cases"], 1)
+        self.assertEqual(summary["conditions"]["A"]["unique_cases"], 2)
+        self.assertEqual(summary["budget_filtered"]["A"]["accuracy"], 1.0)
+        self.assertEqual(summary["conditions"]["A"]["accuracy"], 0.5)
+
+    def test_summary_omits_budget_filtered_view_when_budget_not_used(self):
+        rows = [
+            {
+                "condition": "A",
+                "case_id": "t1",
+                "domain": "math",
+                "seed": 0,
+                "passed": True,
+                "wall_ms": 10.0,
+                "usage": None,
+                "error": "",
+            },
+        ]
+
+        summary = eval_script._summarize(rows)
+
+        self.assertNotIn("budget_filtered", summary)
+
+    def test_load_budget_manifest_returns_by_family_mapping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "budget-manifest.json"
+            manifest_path.write_text(
+                json.dumps({"by_family": {"math": {"token_budget": 100}}}), encoding="utf-8"
+            )
+
+            by_family = eval_script._load_budget_manifest(manifest_path)
+
+        self.assertEqual(by_family, {"math": {"token_budget": 100}})
+
+    def test_main_applies_budget_manifest_per_case_family(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cases_path = tmp_path / "cases.jsonl"
+            cases_path.write_text(
+                json.dumps(
+                    {
+                        "id": "c1",
+                        "prompt": "2 + 3",
+                        "domain": "math",
+                        "grader": {"type": "exact", "value": "5"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config_path = tmp_path / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                        "roles": [{"name": "solver", "model": "m"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest_path = tmp_path / "budget-manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {"by_family": {"math": {"token_budget": 1, "wall_clock_budget_ms": 60000}}}
+                ),
+                encoding="utf-8",
+            )
+            output_dir = tmp_path / "out"
+
+            with mock.patch.object(eval_script, "FuguLocalOrchestrator", FakeOrchestrator):
+                code = eval_script.main(
+                    [
+                        "--cases",
+                        str(cases_path),
+                        "--condition",
+                        f"A={config_path}",
+                        "--budget-manifest",
+                        str(manifest_path),
+                        "--output-dir",
+                        str(output_dir),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            rows = [
+                json.loads(line)
+                for line in (output_dir / "results.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["budget_exceeded"])
+        self.assertFalse(rows[0]["passed"])
 
 
 if __name__ == "__main__":

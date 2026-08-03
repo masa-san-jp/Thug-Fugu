@@ -196,6 +196,27 @@ class ServerTests(unittest.TestCase):
             },
         )
 
+    def test_ignores_verify_config_override_in_request_body(self):
+        baseline_status, baseline_body = self._post_chat(
+            {"model": "fugu-local", "messages": [{"role": "user", "content": "hello"}]}
+        )
+        overridden_status, overridden_body = self._post_chat(
+            {
+                "model": "fugu-local",
+                "messages": [{"role": "user", "content": "hello"}],
+                "verify": {
+                    "checks": {"constraint": {"enabled": True, "regex": "this-cannot-match"}}
+                },
+            }
+        )
+
+        self.assertEqual(baseline_status, 200)
+        self.assertEqual(overridden_status, 200)
+        self.assertEqual(
+            overridden_body["choices"][0]["message"]["content"],
+            baseline_body["choices"][0]["message"]["content"],
+        )
+
     def test_health_reports_active_pool_state_without_credentials(self):
         endpoint = "http://user:secret@127.0.0.1:11434?token=secret"
         config = config_from_dict(
@@ -626,6 +647,64 @@ class ServerTests(unittest.TestCase):
         self.assertIn("buffered fallback", raw.decode("utf-8"))
         self.assertEqual(backend.chat_calls, 1)
         self.assertEqual(backend.stream_calls, 0)
+
+    def test_sequential_dag_streaming_uses_buffered_fallback(self):
+        # sequential_dag is not in orchestrator.py's streaming
+        # allowed_patterns ({"direct", "role_split"}), so
+        # prepare_streaming_response() returns None and the server must fall
+        # back to a buffered (non-token-streamed) SSE response rather than
+        # erroring.
+        config = config_from_dict(
+            {
+                "models": [
+                    {"name": "solver-model", "backend": "echo", "model": "mock-solver"},
+                    {"name": "synth-model", "backend": "echo", "model": "mock-synth"},
+                ],
+                "roles": [
+                    {"name": "solver", "model": "solver-model"},
+                    {
+                        "name": "synthesizer",
+                        "model": "synth-model",
+                        "is_synthesizer": True,
+                    },
+                ],
+                "coordinator": {
+                    "enabled": True,
+                    "default_pattern": "sequential_dag",
+                    "dag": {
+                        "stages": [
+                            {"name": "solver", "role": "solver"},
+                            {"name": "writer", "role": "synthesizer"},
+                        ]
+                    },
+                },
+            }
+        )
+        server = FuguLocalHTTPServer(
+            ("127.0.0.1", 0),
+            FuguLocalHandler,
+            FuguLocalOrchestrator(config),
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, headers, raw = self._post_chat_raw_to(
+                f"http://127.0.0.1:{server.server_port}",
+                {
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": True,
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", headers["content-type"])
+        body = raw.decode("utf-8")
+        self.assertIn("data:", body)
+        self.assertIn("[DONE]", body)
 
     def test_rejects_non_boolean_stream(self):
         status, body = self._post_chat(

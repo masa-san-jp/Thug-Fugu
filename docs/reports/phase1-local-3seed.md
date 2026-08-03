@@ -3,6 +3,17 @@
 Date: 2026-08-02  
 Tracking issue: [#73](https://github.com/masa-san-jp/Thug-Fugu/issues/73)
 
+> **Note added 2026-08-03 (WP-1, #106).** These 36 "runs" per condition are 12
+> tasks × 3 stochastic repeats, not 36 unique tasks — the evaluator recorded a
+> `seed` label but never passed it to any backend, so each repeat was an
+> independent stochastic sample of the same 12 tasks rather than a
+> reproducible re-run. The correct sample unit for statistics is the unique
+> task (12 per condition here), not the run. The evaluator now propagates a
+> real seed to backends that support it (`seed_sent` per row) and reports
+> accuracy as a per-task mean; see
+> [`evaluation-harness.md`](../operations/evaluation-harness.md). This
+> report's numbers are otherwise unchanged.
+
 ## Setup
 
 - Apple M4 Max: 16 CPU cores, 40 GPU cores
