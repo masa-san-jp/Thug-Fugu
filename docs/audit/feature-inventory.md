@@ -99,6 +99,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Reproducible single-vs-multi evaluation harness | `stable` | `scripts/evaluate_orchestration.py`, `evals/` | `test_evaluate_orchestration.py` |
 | Phase 1 comparison matrix / multi-seed domain statistics | `experimental` | `evals/phase1/`, `scripts/run_phase1_comparison.sh` | `test_evaluate_orchestration.py` |
 | Evaluator seed pass-through, task-level accuracy (`schema_version: 3`), and paired-bootstrap condition comparison (`--repeats`, `seed_sent`, `task_scores`, `worker_outputs[].passed`, `paired`) | `experimental` | `scripts/evaluate_orchestration.py` (`_run_case`, `_summarize`, `_paired_bootstrap_ci`) | `test_evaluate_orchestration.py` |
+| Error-correlation / complementarity analysis of a `results.jsonl` (task×condition correctness matrix, condition-pair and worker-pair phi coefficients with bootstrap 95% CI, oracle upper bound, synthesizer damage/repair rate, quality-per-1k-tokens, cost-per-correct, by-domain breakdown; never re-applies task graders, never raises on missing `worker_outputs`/old-format `passed`) | `experimental` | `scripts/analyze_results.py` | `test_analyze_results.py` |
 
 ### Distributed inference (Epic target)
 
