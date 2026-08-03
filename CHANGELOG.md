@@ -85,6 +85,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disk; a subprocess-based code-execution verifier was evaluated and
   rejected as unsafe to implement without an external, human-gated sandbox
   (see `docs/operations/security-profile.md`).
+- New `scripts/benchmark_cluster.py`: measures throughput (req/s), latency
+  p50/p95/p99, and request success rate for a `model_pool`, reusing the
+  existing `ModelRouter`/failover machinery -- no separate "cluster mode".
+  Optional `--outage-member <endpoint>` re-runs the same concurrency sweep
+  with one member simulated as stopped, producing a baseline-vs-degraded
+  success-rate/latency comparison for the router's failover behavior.
+  Deliberately reports no quality/accuracy metric of any kind; hardware/
+  power metadata is manual-input only via `--hardware-json` (never
+  auto-measured). See `docs/operations/multi-node-benchmark.md`.
 
 ### Changed
 - **Breaking**: `coordinator.ensemble.vote: "majority"` now normalizes
