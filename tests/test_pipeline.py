@@ -1,7 +1,12 @@
 import time
 import unittest
 
-from fugu_local.config import DagStageConfig
+from fugu_local.config import (
+    ChecksConfig,
+    CitationCheckConfig,
+    ConstraintCheckConfig,
+    DagStageConfig,
+)
 from fugu_local.pipeline import StageCallResult, run_sequential_dag
 
 
@@ -213,6 +218,86 @@ class ParseFailureTests(unittest.TestCase):
         self.assertEqual(result.content, "solver-recovers")
         writer_output = next(o for o in result.stage_results if o.stage == "writer")
         self.assertEqual(writer_output.parse_error, "backend unreachable")
+
+
+class MechanicalVerificationTests(unittest.TestCase):
+    def test_no_verify_checks_leaves_llm_verification_untouched(self):
+        caller = RecordingCaller(
+            {
+                "solver": '{"answer": "x", "claims": [{"text": "42"}]}',
+                "verifier": '{"claims": [{"text": "42", "verification": "passed"}]}',
+            }
+        )
+
+        result = run_sequential_dag(full_stages(), caller, "task")
+
+        verifier_output = next(o for o in result.stage_results if o.stage == "verifier")
+        self.assertEqual(verifier_output.claims[0].verification, "passed")
+
+    def test_disabled_checks_config_leaves_llm_verification_untouched(self):
+        caller = RecordingCaller(
+            {
+                "solver": '{"answer": "x", "claims": [{"text": "42"}]}',
+                "verifier": '{"claims": [{"text": "42", "verification": "passed"}]}',
+            }
+        )
+
+        result = run_sequential_dag(full_stages(), caller, "task", verify_checks=ChecksConfig())
+
+        verifier_output = next(o for o in result.stage_results if o.stage == "verifier")
+        self.assertEqual(verifier_output.claims[0].verification, "passed")
+
+    def test_constraint_check_overrides_llm_pass_with_mechanical_failure(self):
+        caller = RecordingCaller(
+            {
+                "solver": '{"answer": "x", "claims": [{"text": "not-a-number"}]}',
+                "verifier": '{"claims": [{"text": "not-a-number", "verification": "passed"}]}',
+            }
+        )
+        checks = ChecksConfig(constraint=ConstraintCheckConfig(enabled=True, regex=r"^\d+$"))
+
+        result = run_sequential_dag(full_stages(), caller, "task", verify_checks=checks)
+
+        verifier_output = next(o for o in result.stage_results if o.stage == "verifier")
+        self.assertEqual(verifier_output.claims[0].verification, "failed")
+        critic_request = next(r for r in caller.requests if r.stage == "critic")
+        self.assertIn("failed", critic_request.user_content)
+
+    def test_citation_check_passes_when_evidence_in_context(self):
+        caller = RecordingCaller(
+            {
+                "solver": (
+                    '{"answer": "x", "claims": [{"text": "c1", "evidence": "subproblem-A"}]}'
+                ),
+                "planner": '{"subproblems": ["subproblem-A"]}',
+                "verifier": '{"claims": [{"text": "c1", "evidence": "subproblem-A"}]}',
+            }
+        )
+        checks = ChecksConfig(citation=CitationCheckConfig(enabled=True))
+
+        result = run_sequential_dag(full_stages(), caller, "task", verify_checks=checks)
+
+        verifier_output = next(o for o in result.stage_results if o.stage == "verifier")
+        self.assertEqual(verifier_output.claims[0].verification, "passed")
+
+    def test_citation_check_fails_when_evidence_absent_from_context(self):
+        caller = RecordingCaller(
+            {
+                "solver": (
+                    '{"answer": "x", "claims": [{"text": "c1", '
+                    '"evidence": "nothing-like-this-appears-anywhere"}]}'
+                ),
+                "verifier": (
+                    '{"claims": [{"text": "c1", "evidence": "nothing-like-this-appears-anywhere"}]}'
+                ),
+            }
+        )
+        checks = ChecksConfig(citation=CitationCheckConfig(enabled=True))
+
+        result = run_sequential_dag(full_stages(), caller, "task", verify_checks=checks)
+
+        verifier_output = next(o for o in result.stage_results if o.stage == "verifier")
+        self.assertEqual(verifier_output.claims[0].verification, "failed")
 
 
 if __name__ == "__main__":

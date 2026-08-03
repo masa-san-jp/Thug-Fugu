@@ -19,9 +19,10 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from .backends import TokenUsage
-from .config import DagStageConfig
+from .config import ChecksConfig, DagStageConfig
 from .seeding import derive_seed
 from .stages import Claim, StageOutput, parse_stage_output, stage_system_prompt
+from .verifiers import verify_citation, verify_constraint
 
 
 @dataclass(frozen=True)
@@ -59,11 +60,18 @@ def run_sequential_dag(
     base_seed: Optional[int] = None,
     deadline: Optional[float] = None,
     max_stage_tokens: Optional[int] = None,
+    verify_checks: Optional[ChecksConfig] = None,
 ) -> DagRunResult:
     """Execute the sequential DAG and return the final answer plus per-stage
     output and any deadline warnings. Never raises for a malformed or
     missing model response -- that is handled by ``stages.parse_stage_output``
-    and the bypass rules below."""
+    and the bypass rules below.
+
+    ``verify_checks``, when provided, backs up the verifier stage's LLM
+    self-report with in-process constraint/citation checks (see
+    ``verifiers.py``); each check is individually a no-op unless its own
+    ``enabled`` flag is set, so passing the all-disabled default leaves
+    verifier-stage output unchanged."""
 
     return _PipelineRun(
         stages,
@@ -72,6 +80,7 @@ def run_sequential_dag(
         base_seed=base_seed,
         deadline=deadline,
         max_stage_tokens=max_stage_tokens,
+        verify_checks=verify_checks,
     ).run()
 
 
@@ -95,6 +104,7 @@ class _PipelineRun:
         base_seed: Optional[int],
         deadline: Optional[float],
         max_stage_tokens: Optional[int],
+        verify_checks: Optional[ChecksConfig] = None,
     ):
         self._stages_by_name = {stage.name: stage for stage in stages}
         self._call_stage = call_stage
@@ -102,6 +112,7 @@ class _PipelineRun:
         self._base_seed = base_seed
         self._deadline = deadline
         self._max_stage_tokens = max_stage_tokens
+        self._verify_checks = verify_checks
         self._sections: List[_Section] = []
         self.stage_results: List[StageOutput] = []
         self.warnings: List[str] = []
@@ -255,6 +266,7 @@ class _PipelineRun:
 
     def _run_verifier_stage(self, solver_outputs: List[StageOutput]) -> List[Claim]:
         solver_claims = [claim for output in solver_outputs for claim in output.claims]
+        verifier_result_index: Optional[int] = None
 
         if self._enabled("verifier"):
             claims_text = (
@@ -267,6 +279,7 @@ class _PipelineRun:
                 seed_key="dag:verifier",
                 extra_instruction=f"## Claims to verify\n{claims_text}",
             )
+            verifier_result_index = len(self.stage_results) - 1
             verified = output.claims if output.claims else solver_claims
         else:
             verified = [
@@ -279,6 +292,17 @@ class _PipelineRun:
                 for claim in solver_claims
             ]
 
+        if self._verify_checks is not None:
+            context = f"{self._task_text}\n\n{self._render_context()}"
+            verified = [self._apply_mechanical_checks(claim, context) for claim in verified]
+            # Reflect the mechanical checks in the recorded stage output too
+            # (not just the downstream prompt section) so callers reading
+            # OrchestrationResult.stage_results see the authoritative verdict.
+            if verifier_result_index is not None:
+                self.stage_results[verifier_result_index] = dataclasses.replace(
+                    self.stage_results[verifier_result_index], claims=verified
+                )
+
         lines = [
             f'- claim "{claim.text}" -> {claim.verification} (reason: {claim.evidence or "n/a"})'
             for claim in verified
@@ -288,6 +312,21 @@ class _PipelineRun:
             "\n".join(lines) if lines else "(no claims verified)",
         )
         return verified
+
+    def _apply_mechanical_checks(self, claim: Claim, context: str) -> Claim:
+        assert self._verify_checks is not None
+        outcomes = []
+        constraint_outcome = verify_constraint(claim.text, self._verify_checks.constraint)
+        if constraint_outcome is not None:
+            outcomes.append(constraint_outcome)
+        citation_outcome = verify_citation(claim, context, self._verify_checks.citation)
+        if citation_outcome is not None:
+            outcomes.append(citation_outcome)
+        if not outcomes:
+            return claim
+        verification = "failed" if any(o.verification == "failed" for o in outcomes) else "passed"
+        evidence = "; ".join(o.evidence for o in outcomes)
+        return dataclasses.replace(claim, verification=verification, evidence=evidence)
 
     def _run_critic_stage(self) -> List[Claim]:
         if self._enabled("critic"):
