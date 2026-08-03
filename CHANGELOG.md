@@ -111,6 +111,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribution) is wired for WP-7's future output but stays empty with a
   warning until WP-7 exists. Writes `analysis.json` and `analysis.md`. See
   `docs/operations/evaluation-harness.md`.
+- New `scripts/validate_tasks.py` (WP-2a): validates the hard-benchmark-v2
+  task schema (`family`/`difficulty`/`answer_type`/`grader.type`
+  allow-lists; rejects `exec` and rubric graders outright), cross-file
+  `id` uniqueness, a `gold` self-consistency check (does the task's own
+  grader accept its own `gold`), and the calibration/dev/test split's
+  structural rules (minimum sizes, per-family minimums, the 20% easy-task
+  cap). The task files themselves are WP-2b and require human review of
+  gold-answer correctness before use; this validator checks schema and
+  self-consistency only, never answer correctness, and never touches
+  `review_status`. See `docs/operations/benchmark-v2.md`.
 
 ### Changed
 - **Breaking**: `coordinator.ensemble.vote: "majority"` now normalizes
