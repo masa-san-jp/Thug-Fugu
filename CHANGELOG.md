@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional deterministic-answer normalization for Markdown, LaTeX, and Unicode
   subscript/superscript formatting.
 - Sanitized three-seed Phase 1 local comparison report and aggregate metrics.
+- Optional request seeding: `ChatRequest.seed` is passed through to the Ollama
+  (`options.seed`) and OpenAI-compatible (`seed`) backend payloads when set, and
+  a new `orchestrator.seed` config key (overridable per call via `chat(seed=...)`)
+  derives a distinct, deterministic seed per worker/verifier/synthesizer/
+  coordinator request so same-model roles don't collapse to identical output.
+  Omitted by default; existing configs and requests are unaffected. Seeding is
+  best-effort — backends are not required to honor it.
 
 ## [0.1.0] - 2026-07-30
 

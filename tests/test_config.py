@@ -251,6 +251,37 @@ class RequestTimeoutConfigTests(unittest.TestCase):
                 }
             )
 
+    def test_orchestrator_seed_defaults_to_none(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+
+        self.assertIsNone(config.orchestrator.seed)
+
+    def test_orchestrator_seed_accepts_configured_integer(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+                "orchestrator": {"seed": 20260802},
+            }
+        )
+
+        self.assertEqual(config.orchestrator.seed, 20260802)
+
+    def test_orchestrator_seed_rejects_non_integer(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [{"name": "planner", "model": "m"}],
+                    "orchestrator": {"seed": "20260802"},
+                }
+            )
+
 
 class ServerQueueConfigTests(unittest.TestCase):
     def _base(self, server=None):

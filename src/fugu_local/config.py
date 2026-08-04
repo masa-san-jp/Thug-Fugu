@@ -77,6 +77,7 @@ class OrchestratorConfig:
     temperature: float = 0.2
     max_tokens: Optional[int] = None
     request_timeout_seconds: Optional[float] = None
+    seed: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -283,6 +284,7 @@ def _orchestrator_from_dict(raw: Any) -> OrchestratorConfig:
         temperature=_optional_number(obj, "temperature", default=0.2),
         max_tokens=_optional_int(obj, "max_tokens", default=None),
         request_timeout_seconds=_optional_positive_number(obj, "request_timeout_seconds"),
+        seed=_optional_int(obj, "seed", default=None),
     )
 
 

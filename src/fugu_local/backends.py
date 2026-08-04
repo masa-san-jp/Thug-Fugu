@@ -33,6 +33,7 @@ class ChatRequest:
     max_tokens: Optional[int] = None
     tools: Optional[List[dict]] = None
     tool_choice: Any = None
+    seed: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +240,8 @@ class OpenAICompatibleBackend:
         }
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
+        if request.seed is not None:
+            payload["seed"] = request.seed
         if request.tools:
             payload["tools"] = request.tools
             if request.tool_choice is not None:
@@ -281,6 +284,8 @@ class OpenAICompatibleBackend:
         }
         if request.max_tokens is not None:
             payload["max_tokens"] = request.max_tokens
+        if request.seed is not None:
+            payload["seed"] = request.seed
 
         saw_finish = False
         for line in _post_stream_lines(
@@ -351,6 +356,8 @@ class OllamaBackend:
         }
         if request.max_tokens is not None:
             payload["options"]["num_predict"] = request.max_tokens
+        if request.seed is not None:
+            payload["options"]["seed"] = request.seed
         if request.tools:
             payload["tools"] = request.tools
 
@@ -396,6 +403,8 @@ class OllamaBackend:
         }
         if request.max_tokens is not None:
             payload["options"]["num_predict"] = request.max_tokens
+        if request.seed is not None:
+            payload["options"]["seed"] = request.seed
 
         saw_finish = False
         for line in _post_stream_lines(
@@ -447,7 +456,7 @@ class EchoBackend:
             f"system={system[:160]}\n"
             f"user={user[:1000]}"
         )
-        return ChatResponse(content=content, raw={"backend": "echo"})
+        return ChatResponse(content=content, raw={"backend": "echo", "seed": request.seed})
 
     def stream_chat(self, request: ChatRequest) -> Iterator[ChatStreamChunk]:
         response = self.chat(request)

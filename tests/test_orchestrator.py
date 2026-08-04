@@ -2,7 +2,7 @@ import unittest
 
 from fugu_local.backends import ChatMessage, ChatResponse, ChatStreamChunk, TokenUsage
 from fugu_local.config import config_from_dict
-from fugu_local.orchestrator import FuguLocalOrchestrator, OrchestrationError
+from fugu_local.orchestrator import FuguLocalOrchestrator, OrchestrationError, derive_seed
 
 
 class StaticBackend:
@@ -1116,3 +1116,218 @@ class RequestDeadlineTests(unittest.TestCase):
             orchestrator.chat([ChatMessage(role="user", content="hello")])
 
         self.assertIn("deadline", str(ctx.exception))
+
+
+class DeriveSeedTests(unittest.TestCase):
+    def test_derive_seed_is_deterministic(self):
+        first = derive_seed(42, "worker:planner")
+        second = derive_seed(42, "worker:planner")
+
+        self.assertEqual(first, second)
+        self.assertIsNone(derive_seed(None, "worker:planner"))
+
+    def test_derive_seed_differs_per_role(self):
+        planner_seed = derive_seed(42, "worker:planner")
+        coder_seed = derive_seed(42, "worker:coder")
+
+        self.assertNotEqual(planner_seed, coder_seed)
+
+    def test_derive_seed_stable_when_role_order_changes(self):
+        def build(role_order):
+            return config_from_dict(
+                {
+                    "models": [
+                        {"name": "planner-model", "backend": "echo", "model": "mock-planner"},
+                        {"name": "coder-model", "backend": "echo", "model": "mock-coder"},
+                    ],
+                    "roles": [
+                        role
+                        for name in role_order
+                        for role in (
+                            [
+                                {
+                                    "name": "planner",
+                                    "model": "planner-model",
+                                    "always_include": True,
+                                }
+                            ]
+                            if name == "planner"
+                            else [
+                                {
+                                    "name": "coder",
+                                    "model": "coder-model",
+                                    "always_include": True,
+                                }
+                            ]
+                        )
+                    ],
+                }
+            )
+
+        planner_first = StaticBackend("planner output")
+        coder_first = StaticBackend("coder output")
+        orchestrator_planner_first = FuguLocalOrchestrator(
+            build(["planner", "coder"]),
+            backend_overrides={"planner-model": planner_first, "coder-model": coder_first},
+        )
+        planner_second = StaticBackend("planner output")
+        coder_second = StaticBackend("coder output")
+        orchestrator_coder_first = FuguLocalOrchestrator(
+            build(["coder", "planner"]),
+            backend_overrides={"planner-model": planner_second, "coder-model": coder_second},
+        )
+
+        orchestrator_planner_first.chat([ChatMessage(role="user", content="hello")], seed=42)
+        orchestrator_coder_first.chat([ChatMessage(role="user", content="hello")], seed=42)
+
+        self.assertEqual(planner_first.calls[-1].seed, planner_second.calls[-1].seed)
+        self.assertEqual(coder_first.calls[-1].seed, coder_second.calls[-1].seed)
+
+
+class SeedPropagationTests(unittest.TestCase):
+    def test_seed_is_propagated_to_all_worker_requests(self):
+        worker = StaticBackend("worker output")
+        verifier = StaticBackend('{"pass": true, "critique": ""}')
+        synth = StaticBackend("final output")
+        orchestrator = FuguLocalOrchestrator(
+            make_verifier_config(max_retries=2),
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": synth,
+            },
+        )
+
+        orchestrator.chat([ChatMessage(role="user", content="hello")], seed=42)
+
+        self.assertEqual(worker.calls[-1].seed, derive_seed(42, "worker:worker"))
+        self.assertEqual(verifier.calls[-1].seed, derive_seed(42, "verifier:attempt1"))
+        self.assertEqual(synth.calls[-1].seed, derive_seed(42, "synthesizer"))
+
+    def test_seed_none_leaves_requests_unseeded(self):
+        worker = StaticBackend("worker output")
+        verifier = StaticBackend('{"pass": true, "critique": ""}')
+        synth = StaticBackend("final output")
+        orchestrator = FuguLocalOrchestrator(
+            make_verifier_config(max_retries=2),
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": synth,
+            },
+        )
+
+        orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertIsNone(worker.calls[-1].seed)
+        self.assertIsNone(verifier.calls[-1].seed)
+        self.assertIsNone(synth.calls[-1].seed)
+
+    def test_orchestrator_config_seed_is_used_when_chat_seed_omitted(self):
+        worker = StaticBackend("worker output")
+        verifier = StaticBackend('{"pass": true, "critique": ""}')
+        synth = StaticBackend("final output")
+        config_with_seed = config_from_dict(
+            {
+                "models": [
+                    {"name": "worker-model", "backend": "echo", "model": "mock-worker"},
+                    {"name": "verifier-model", "backend": "echo", "model": "mock-verifier"},
+                    {"name": "synth-model", "backend": "echo", "model": "mock-synth"},
+                ],
+                "roles": [
+                    {"name": "worker", "model": "worker-model", "system_prompt": "work"},
+                    {
+                        "name": "verifier",
+                        "model": "verifier-model",
+                        "system_prompt": "verify",
+                        "is_verifier": True,
+                    },
+                    {
+                        "name": "synthesizer",
+                        "model": "synth-model",
+                        "system_prompt": "synth",
+                        "is_synthesizer": True,
+                    },
+                ],
+                "orchestrator": {"selection_policy": "all", "seed": 20260802},
+                "coordinator": {"verify": {"enabled": True, "max_retries": 2}},
+            }
+        )
+        orchestrator = FuguLocalOrchestrator(
+            config_with_seed,
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": synth,
+            },
+        )
+
+        orchestrator.chat([ChatMessage(role="user", content="hello")])
+
+        self.assertEqual(worker.calls[-1].seed, derive_seed(20260802, "worker:worker"))
+
+    def test_explicit_chat_seed_overrides_orchestrator_config_seed(self):
+        worker = StaticBackend("worker output")
+        verifier = StaticBackend('{"pass": true, "critique": ""}')
+        synth = StaticBackend("final output")
+        config_with_seed = config_from_dict(
+            {
+                "models": [
+                    {"name": "worker-model", "backend": "echo", "model": "mock-worker"},
+                    {"name": "verifier-model", "backend": "echo", "model": "mock-verifier"},
+                    {"name": "synth-model", "backend": "echo", "model": "mock-synth"},
+                ],
+                "roles": [
+                    {"name": "worker", "model": "worker-model", "system_prompt": "work"},
+                    {
+                        "name": "verifier",
+                        "model": "verifier-model",
+                        "system_prompt": "verify",
+                        "is_verifier": True,
+                    },
+                    {
+                        "name": "synthesizer",
+                        "model": "synth-model",
+                        "system_prompt": "synth",
+                        "is_synthesizer": True,
+                    },
+                ],
+                "orchestrator": {"selection_policy": "all", "seed": 1},
+                "coordinator": {"verify": {"enabled": True, "max_retries": 2}},
+            }
+        )
+        orchestrator = FuguLocalOrchestrator(
+            config_with_seed,
+            backend_overrides={
+                "worker-model": worker,
+                "verifier-model": verifier,
+                "synth-model": synth,
+            },
+        )
+
+        orchestrator.chat([ChatMessage(role="user", content="hello")], seed=99)
+
+        self.assertEqual(worker.calls[-1].seed, derive_seed(99, "worker:worker"))
+
+    def test_seed_differs_across_parallel_ensemble_members(self):
+        config = make_coordinator_config(
+            {
+                "enabled": True,
+                "rules": [{"match": ["比較"], "pattern": "parallel_ensemble"}],
+                "ensemble": {"n": 3, "vote": "majority"},
+            }
+        )
+        planner = StaticBackend("same answer")
+        orchestrator = FuguLocalOrchestrator(
+            config,
+            backend_overrides={"planner-model": planner, "synth-model": StaticBackend("x")},
+        )
+
+        orchestrator.chat([ChatMessage(role="user", content="2案を比較して")], seed=42)
+
+        # Workers run concurrently, so only compare the set of seeds actually
+        # used, not the order in which they were recorded.
+        seeds = {call.seed for call in planner.calls}
+        expected = {derive_seed(42, f"worker:planner#{index}") for index in range(1, 4)}
+        self.assertEqual(len(planner.calls), 3)
+        self.assertEqual(seeds, expected)
