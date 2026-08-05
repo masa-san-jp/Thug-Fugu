@@ -8,9 +8,36 @@ The dependency-free harness runs multiple Thug-Fugu configurations against the
 same JSONL task set and records accuracy, errors, wall time, raw output, and
 backend-reported token usage.
 
-Multiple seeds (`--seeds 11,22,33`) repeat every `(condition, case)` run.
-Optional case `domain` fields produce per-domain summaries and Wilson 95%
-confidence intervals.
+**The sample unit is the unique task, not the run.** With `--repeats` and/or
+`--seeds` greater than 1, a task is run more than once; `summary.json` reports
+each condition's `task_scores` (one score per task, averaged across its
+repeats) and `accuracy` as the mean of those per-task scores — not the mean of
+every individual run. Averaging over runs instead of tasks silently
+double-counts whichever tasks happened to get more repeats.
+
+`--repeats N` (requires `--seed`, not `--seeds`) re-runs every `(condition,
+case)` N times, deriving a distinct seed per repeat from the base seed
+(`derive_seed(base_seed, "repeat#i")`). `--seeds 11,22,33` instead runs once
+per listed base seed; it cannot be combined with `--repeats > 1`, since
+repeat seeds must derive from a single base seed. Optional case `domain`
+fields produce a per-condition `by_domain` breakdown (also task-level, not
+run-level).
+
+Each result row records whether a seed was actually handed to the backend
+request: `seed_sent`. This is `false` whenever every model/pool in the
+condition uses the offline `echo` backend, since `EchoBackend` never builds an
+outbound payload — report such runs as **stochastic repeats**, not seeded
+runs. `seed_sent: true` (Ollama or an OpenAI-compatible backend) only confirms
+the seed was placed on the outbound request; it is not proof the backend
+actually used it to make output deterministic — inference-server seed support
+varies. Report `seed_sent: true` runs as "seed sent; determinism not
+verified", not as "reproducible".
+
+When two or more `--condition`s are given, `summary.json` also reports
+`paired`: a deterministic paired-bootstrap 95% CI (fixed RNG seed, stdlib
+`random` only) on the per-task score difference between the first
+`--condition` (treated as the baseline) and every other condition, computed
+only over tasks common to both.
 
 Typical conditions:
 
@@ -29,8 +56,13 @@ PYTHONPATH=src python3 scripts/evaluate_orchestration.py \
   --condition single=examples/fugu-local.eval-single.json \
   --condition multi=examples/fugu-local.eval-multi.json \
   --seed 7 \
+  --repeats 2 \
   --output-dir /tmp/thug-fugu-eval/echo-001
 ```
+
+Every row from this command will have `seed_sent: false` and should be read
+as a stochastic repeat, not a seeded run — the echo backend never builds an
+outbound payload (see above).
 
 ## Experiment bundle
 
@@ -48,13 +80,19 @@ experiment/
     └── 01-condition.json ...
 ```
 
-- `manifest.json`: seed, temperature override, input hashes, model/backend names,
-  roles, coordinator settings, quantization metadata, hardware metadata, output
+- `manifest.json`: seed(s), repeats, temperature override, input hashes,
+  model/backend names, roles, coordinator settings (including
+  `orchestrator.seed`), quantization metadata, hardware metadata, output
   paths, and a rerun command.
-- `results.jsonl`: full raw output and metrics for each `(condition, case)`.
-- `results.csv`: spreadsheet-friendly preview and metrics.
-- `summary.json`: accuracy, errors, mean/median latency, total tokens, and mean
-  tokens per condition.
+- `results.jsonl`: full raw output and metrics for each `(condition, case,
+  seed, repeat_index)` run, including `seed_sent`, per-worker `worker_outputs`
+  (each with its own `passed`, from applying the task's grader to that
+  worker's own output), and `stage_results` (reserved, empty until the
+  sequential-DAG work lands).
+- `results.csv`: spreadsheet-friendly preview and scalar metrics.
+- `summary.json` (`schema_version: 3`): per-condition `task_scores`,
+  task-level `accuracy` and `accuracy_stderr`, `by_domain`, `tokens_total`,
+  `wall_ms_p50`/`wall_ms_p95`, and cross-condition `paired` comparisons.
 - `inputs/`: task/config snapshots. Literal `api_key` values are redacted.
 
 The original config path and SHA-256 are also recorded. A rerun uses the original
@@ -68,7 +106,11 @@ PYTHONPATH=src python3 scripts/evaluate_orchestration.py \
   --output-dir /tmp/thug-fugu-eval/echo-001-rerun
 ```
 
-The generated `rerun.sh` contains the same command.
+The generated `rerun.sh` contains the same command. Manifests from
+`schema_version` 1 or 2 (produced before `--repeats`/`seed_sent`/paired
+comparisons existed) can still be rerun; a rerun always writes a fresh
+`schema_version: 3` manifest with `repeats` defaulted to `1` when the source
+manifest predates it.
 
 ## Task format
 
@@ -120,8 +162,9 @@ Hardware metadata can be supplied as a JSON object:
 ```
 
 Without this option the manifest records basic OS, architecture, Python version,
-and hostname. The harness records the seed even though backend/model determinism
-depends on the serving implementation.
+and hostname. The harness always records the seed it requested; whether it was
+actually sent to a real backend is reported per-row as `seed_sent` (see above),
+and even a sent seed does not guarantee backend/model determinism.
 
 ## Minimal real-LLM experiment
 

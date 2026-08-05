@@ -65,7 +65,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 target-version = "py39"
 
 [tool.ruff.lint]
