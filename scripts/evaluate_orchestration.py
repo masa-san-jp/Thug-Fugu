@@ -28,9 +28,11 @@ from typing import Any, Optional
 
 from fugu_local.backends import ChatMessage
 from fugu_local.config import FuguLocalConfig, load_config
-from fugu_local.orchestrator import FuguLocalOrchestrator
+from fugu_local.orchestrator import FuguLocalOrchestrator, derive_seed
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+PAIRED_BOOTSTRAP_ITERATIONS = 10000
+PAIRED_BOOTSTRAP_RNG_SEED = 20260802
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,15 @@ def main(argv: Optional[list] = None) -> int:
         help="Comma-separated experiment seeds (for uncertainty estimates)",
     )
     parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help=(
+            "Stochastic repeats per (condition, case), seeded from a single base "
+            "seed via derive_seed(base_seed, 'repeat#i'). Requires --seed, not --seeds."
+        ),
+    )
+    parser.add_argument(
         "--temperature",
         type=float,
         default=None,
@@ -90,6 +101,14 @@ def main(argv: Optional[list] = None) -> int:
     args = parser.parse_args(argv)
     if args.seed is not None and args.seeds:
         raise SystemExit("use either --seed or --seeds, not both")
+    if args.repeats < 1:
+        raise SystemExit("--repeats must be a positive integer")
+    if args.repeats > 1 and args.seeds:
+        raise SystemExit(
+            "--repeats requires --seed (not --seeds): repeat seeds derive from a "
+            "single base seed, so the base seed to derive from would be ambiguous "
+            "with multiple --seeds"
+        )
 
     if args.rerun_manifest:
         if not args.output_dir:
@@ -106,6 +125,7 @@ def main(argv: Optional[list] = None) -> int:
             "cases_path": Path(args.cases),
             "conditions": conditions,
             "seeds": _parse_seeds(args.seeds, args.seed),
+            "repeats": args.repeats,
             "temperature": args.temperature,
             "hardware": _load_hardware(Path(args.hardware_json))
             if args.hardware_json
@@ -120,6 +140,7 @@ def main(argv: Optional[list] = None) -> int:
     cases_path = Path(run_spec["cases_path"]).resolve()
     conditions = list(run_spec["conditions"])
     seeds = [int(seed) for seed in run_spec["seeds"]]
+    repeats = int(run_spec["repeats"])
     temperature = run_spec["temperature"]
     cases = list(_load_cases(cases_path))
 
@@ -131,6 +152,7 @@ def main(argv: Optional[list] = None) -> int:
             conditions=conditions,
             case_count=len(cases),
             seeds=seeds,
+            repeats=repeats,
             temperature=temperature,
             hardware=run_spec["hardware"],
             source_manifest=run_spec["source_manifest"],
@@ -141,18 +163,22 @@ def main(argv: Optional[list] = None) -> int:
         config = load_config(str(condition.config_path))
         orchestrator = FuguLocalOrchestrator(config)
         for seed in seeds:
-            for case in cases:
-                rows.append(
-                    _run_case(
-                        condition,
-                        orchestrator,
-                        case,
-                        seed=seed,
-                        temperature=temperature,
+            for repeat_index in range(repeats):
+                repeat_seed = derive_seed(seed, f"repeat#{repeat_index}")
+                for case in cases:
+                    rows.append(
+                        _run_case(
+                            condition,
+                            orchestrator,
+                            case,
+                            seed=seed,
+                            repeat_index=repeat_index,
+                            repeat_seed=repeat_seed,
+                            temperature=temperature,
+                        )
                     )
-                )
 
-    summary = _summarize(rows)
+    summary = _summarize(rows, repeats=repeats)
     if bundle is not None:
         _write_jsonl(bundle["results_jsonl"], rows)
         _write_csv(bundle["csv"], rows)
@@ -239,9 +265,11 @@ def _run_case(
     case: EvalCase,
     *,
     seed: int = 0,
+    repeat_index: int = 0,
+    repeat_seed: Optional[int] = None,
     temperature: Optional[float] = None,
 ) -> dict:
-    random.seed(f"{seed}:{condition.label}:{case.case_id}")
+    random.seed(f"{seed}:{repeat_index}:{condition.label}:{case.case_id}")
     started = time.perf_counter()
     error = ""
     content = ""
@@ -250,10 +278,12 @@ def _run_case(
     worker_count = 0
     selected_roles = []
     usage = None
+    worker_outputs: list[dict] = []
     try:
         result = orchestrator.chat(
             [ChatMessage(role="user", content=case.prompt)],
             temperature=temperature,
+            seed=repeat_seed,
         )
         content = result.content
         passed = _grade(content, case.grader)
@@ -261,9 +291,11 @@ def _run_case(
         worker_count = len(result.worker_results)
         selected_roles = list(getattr(result, "selected_roles", []))
         usage = _usage_payload(getattr(result, "usage", None))
+        worker_outputs = _worker_outputs_payload(result.worker_results, case.grader)
     except Exception as exc:  # noqa: BLE001 - evaluator records failures as rows.
         error = str(exc)
     wall_ms = round((time.perf_counter() - started) * 1000, 1)
+    seed_sent = repeat_seed is not None and _condition_uses_real_backend(orchestrator.config)
     return {
         "condition": condition.label,
         "config": str(condition.config_path),
@@ -271,16 +303,62 @@ def _run_case(
         "case_id": case.case_id,
         "domain": case.domain,
         "seed": seed,
+        "repeat_index": repeat_index,
+        "seed_sent": seed_sent,
         "passed": passed,
         "wall_ms": wall_ms,
         "pattern": pattern,
         "worker_count": worker_count,
         "selected_roles": selected_roles,
+        "worker_outputs": worker_outputs,
+        "stage_results": [],
         "usage": usage,
         "error": error,
         "content": content,
         "content_preview": content[:240].replace("\n", "\\n"),
     }
+
+
+def _worker_outputs_payload(worker_results, grader: dict) -> list[dict]:
+    """Apply the task grader to each worker's own output.
+
+    WP-6's synthesizer damage/repair rate analysis needs to know whether an
+    individual worker was right or wrong, independent of the final
+    synthesized answer.
+    """
+
+    outputs = []
+    for worker in worker_results:
+        ok = bool(getattr(worker, "ok", False))
+        content = worker.content if ok else ""
+        passed = _grade(content, grader) if ok else False
+        outputs.append(
+            {
+                "role": worker.role,
+                "model": worker.model,
+                "ok": ok,
+                "content": content,
+                "passed": passed,
+                "usage": _usage_payload(getattr(worker, "usage", None)),
+            }
+        )
+    return outputs
+
+
+def _condition_uses_real_backend(config: object) -> bool:
+    """Whether this condition can carry a seed to a real backend payload.
+
+    ``EchoBackend`` never builds an outbound request (see
+    ``fugu_local.backends.EchoBackend``), so a seed handed to it is recorded
+    on the ``ChatRequest`` but never actually sent anywhere. Only Ollama and
+    OpenAI-compatible backends put ``seed`` on the wire.
+    """
+
+    models = getattr(config, "models", None) or []
+    pools = getattr(config, "model_pools", None) or []
+    return any(getattr(model, "backend", None) != "echo" for model in models) or any(
+        getattr(pool, "backend", None) != "echo" for pool in pools
+    )
 
 
 def _grade(content: str, grader: dict) -> bool:
@@ -336,6 +414,7 @@ def _prepare_bundle(
     conditions: list[Condition],
     case_count: int,
     seeds: list[int],
+    repeats: int,
     temperature: Optional[float],
     hardware: dict,
     source_manifest: Optional[Path],
@@ -383,6 +462,7 @@ def _prepare_bundle(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "seed": seeds[0],
         "seeds": seeds,
+        "repeats": repeats,
         "temperature_override": temperature,
         "cases": {
             "source_path": str(cases_path),
@@ -419,11 +499,14 @@ def _prepare_bundle(
     }
 
 
+_SUPPORTED_MANIFEST_SCHEMA_VERSIONS = (1, 2, SCHEMA_VERSION)
+
+
 def _load_rerun_spec(manifest_path: Path) -> dict:
     manifest_path = manifest_path.resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     schema_version = manifest.get("schema_version")
-    if schema_version not in (1, SCHEMA_VERSION):
+    if schema_version not in _SUPPORTED_MANIFEST_SCHEMA_VERSIONS:
         raise ValueError("unsupported evaluation manifest schema_version")
     root = manifest_path.parent
     cases_path = _prefer_matching_source(
@@ -449,6 +532,7 @@ def _load_rerun_spec(manifest_path: Path) -> dict:
         "cases_path": cases_path,
         "conditions": conditions,
         "seeds": manifest.get("seeds", [manifest["seed"]]),
+        "repeats": manifest.get("repeats", 1),
         "temperature": manifest.get("temperature_override"),
         "hardware": manifest.get("hardware", {}),
         "source_manifest": manifest_path,
@@ -504,6 +588,7 @@ def _config_manifest(config: FuguLocalConfig, metadata: dict) -> dict:
             "temperature": config.orchestrator.temperature,
             "max_tokens": config.orchestrator.max_tokens,
             "request_timeout_seconds": config.orchestrator.request_timeout_seconds,
+            "seed": config.orchestrator.seed,
         },
         "coordinator": {
             "enabled": config.coordinator.enabled,
@@ -592,6 +677,8 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         "case_id",
         "domain",
         "seed",
+        "repeat_index",
+        "seed_sent",
         "passed",
         "wall_ms",
         "pattern",
@@ -615,6 +702,8 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
                     "case_id": row["case_id"],
                     "domain": row["domain"],
                     "seed": row["seed"],
+                    "repeat_index": row.get("repeat_index", 0),
+                    "seed_sent": row.get("seed_sent", False),
                     "passed": row["passed"],
                     "wall_ms": row["wall_ms"],
                     "pattern": row["pattern"],
@@ -641,63 +730,162 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _summarize(rows: list[dict]) -> dict:
+def _summarize(rows: list[dict], *, repeats: int = 1) -> dict:
+    """Aggregate results with unique task (not run) as the sample unit.
+
+    A condition's ``accuracy`` is the mean of its per-task scores, where a
+    task's score is its own pass rate across repeats/seeds. This intentionally
+    replaces run-level accuracy: with ``--repeats``/``--seeds`` > 1, run-level
+    accuracy silently double-counts easy tasks and is not paired across
+    conditions.
+    """
+
     by_condition: dict[str, list[dict]] = {}
     for row in rows:
         by_condition.setdefault(row["condition"], []).append(row)
-    summary: dict[str, Any] = {"conditions": {}}
-    for condition, condition_rows in by_condition.items():
-        metrics = _summary_metrics(condition_rows)
-        by_domain: dict[str, list[dict]] = {}
-        for row in condition_rows:
-            by_domain.setdefault(row["domain"], []).append(row)
-        metrics["domains"] = {
-            domain: _summary_metrics(domain_rows)
-            for domain, domain_rows in sorted(by_domain.items())
-        }
-        summary["conditions"][condition] = metrics
-    return summary
+
+    conditions_summary = {
+        label: _condition_summary(condition_rows) for label, condition_rows in by_condition.items()
+    }
+
+    condition_labels = list(by_condition.keys())
+    paired = []
+    if len(condition_labels) >= 2:
+        baseline_label = condition_labels[0]
+        baseline_scores = conditions_summary[baseline_label]["task_scores"]
+        for candidate_label in condition_labels[1:]:
+            candidate_scores = conditions_summary[candidate_label]["task_scores"]
+            paired.append(
+                _paired_comparison(
+                    baseline_label, baseline_scores, candidate_label, candidate_scores
+                )
+            )
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "sample_unit": "unique_task",
+        "n_tasks": len({row["case_id"] for row in rows}),
+        "repeats": repeats,
+        "conditions": conditions_summary,
+        "paired": paired,
+    }
 
 
-def _summary_metrics(rows: list[dict]) -> dict:
-    total = len(rows)
-    passed = sum(1 for row in rows if row["passed"])
+def _condition_summary(rows: list[dict]) -> dict:
+    task_scores = _task_scores(rows)
+    scores = list(task_scores.values())
     latencies = [float(row["wall_ms"]) for row in rows]
-    errors = sum(1 for row in rows if row["error"])
     token_values = [
         row["usage"]["total_tokens"]
         for row in rows
         if row.get("usage") and row["usage"].get("total_tokens") is not None
     ]
     return {
-        "cases": total,
-        "runs": total,
-        "unique_cases": len({row["case_id"] for row in rows}),
+        "task_scores": task_scores,
+        "accuracy": round(sum(scores) / len(scores), 4) if scores else 0.0,
+        "accuracy_stderr": _task_level_stderr(scores),
+        "by_domain": _by_domain_accuracy(rows, task_scores),
+        "tokens_total": sum(token_values) if token_values else None,
+        "wall_ms_p50": _percentile(latencies, 50),
+        "wall_ms_p95": _percentile(latencies, 95),
+        "runs": len(rows),
+        "unique_cases": len(task_scores),
+        "passed": sum(1 for row in rows if row["passed"]),
+        "errors": sum(1 for row in rows if row["error"]),
         "seeds": sorted({row["seed"] for row in rows}),
-        "passed": passed,
-        "accuracy": round(passed / total, 4) if total else 0.0,
-        "accuracy_ci95": _wilson_interval(passed, total),
-        "errors": errors,
-        "mean_wall_ms": round(statistics.mean(latencies), 1) if latencies else 0.0,
-        "median_wall_ms": round(statistics.median(latencies), 1) if latencies else 0.0,
-        "total_tokens": sum(token_values) if token_values else None,
-        "mean_total_tokens": round(statistics.mean(token_values), 1) if token_values else None,
     }
 
 
-def _wilson_interval(successes: int, total: int) -> list[float]:
-    if total <= 0:
-        return [0.0, 0.0]
-    z = 1.96
-    proportion = successes / total
-    denominator = 1 + z * z / total
-    centre = (proportion + z * z / (2 * total)) / denominator
-    margin = (
-        z
-        * math.sqrt(proportion * (1 - proportion) / total + z * z / (4 * total * total))
-        / denominator
-    )
-    return [round(max(0.0, centre - margin), 4), round(min(1.0, centre + margin), 4)]
+def _task_scores(rows: list[dict]) -> dict[str, float]:
+    """Per-task pass rate: the fraction of that task's repeats/seeds that passed."""
+
+    by_case: dict[str, list[bool]] = {}
+    for row in rows:
+        by_case.setdefault(row["case_id"], []).append(bool(row["passed"]))
+    return {case_id: round(sum(passes) / len(passes), 4) for case_id, passes in by_case.items()}
+
+
+def _task_level_stderr(scores: list[float]) -> float:
+    if len(scores) < 2:
+        return 0.0
+    return round(statistics.stdev(scores) / math.sqrt(len(scores)), 4)
+
+
+def _by_domain_accuracy(rows: list[dict], task_scores: dict[str, float]) -> dict[str, float]:
+    domain_of_case: dict[str, str] = {}
+    for row in rows:
+        domain_of_case.setdefault(row["case_id"], row["domain"])
+    cases_by_domain: dict[str, list[str]] = {}
+    for case_id, domain in domain_of_case.items():
+        cases_by_domain.setdefault(domain, []).append(case_id)
+    return {
+        domain: round(sum(task_scores[case_id] for case_id in case_ids) / len(case_ids), 4)
+        for domain, case_ids in sorted(cases_by_domain.items())
+    }
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    """Nearest-rank percentile; no numpy/scipy dependency."""
+
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, math.ceil(pct / 100 * len(ordered)) - 1))
+    return round(ordered[index], 1)
+
+
+def _paired_comparison(
+    baseline_label: str,
+    baseline_scores: dict[str, float],
+    candidate_label: str,
+    candidate_scores: dict[str, float],
+) -> dict:
+    common_ids = sorted(set(baseline_scores) & set(candidate_scores))
+    all_ids = set(baseline_scores) | set(candidate_scores)
+    diffs = [candidate_scores[case_id] - baseline_scores[case_id] for case_id in common_ids]
+    if diffs:
+        mean_diff, ci_low, ci_high = _paired_bootstrap_ci(diffs)
+    else:
+        mean_diff, ci_low, ci_high = 0.0, 0.0, 0.0
+    return {
+        "baseline": baseline_label,
+        "candidate": candidate_label,
+        "n_tasks": len(common_ids),
+        "n_excluded": len(all_ids) - len(common_ids),
+        "mean_diff": round(mean_diff, 4),
+        "ci_low": round(ci_low, 4),
+        "ci_high": round(ci_high, 4),
+        "method": "paired_bootstrap",
+        "iterations": PAIRED_BOOTSTRAP_ITERATIONS,
+        "rng_seed": PAIRED_BOOTSTRAP_RNG_SEED,
+    }
+
+
+def _paired_bootstrap_ci(
+    diffs: list[float],
+    iterations: int = PAIRED_BOOTSTRAP_ITERATIONS,
+    rng_seed: int = PAIRED_BOOTSTRAP_RNG_SEED,
+) -> tuple[float, float, float]:
+    """Paired bootstrap CI over unique-task score differences.
+
+    ``diffs`` must be ordered by case_id (callers sort by case_id) so the
+    resampling sequence, and therefore the CI, is deterministic for a given
+    input. Uses only stdlib ``random`` — no scipy/numpy dependency.
+    """
+
+    rng = random.Random(rng_seed)
+    n = len(diffs)
+    means = []
+    for _ in range(iterations):
+        total = 0.0
+        for _ in range(n):
+            total += diffs[rng.randrange(n)]
+        means.append(total / n)
+    means.sort()
+    mean_diff = sum(diffs) / n
+    lo = means[int(0.025 * iterations)]
+    hi = means[int(0.975 * iterations) - 1]
+    return mean_diff, lo, hi
 
 
 def _usage_payload(usage) -> Optional[dict]:
@@ -714,15 +902,12 @@ def _print_summary(summary: dict) -> None:
     print("Evaluation summary")
     print("------------------")
     for condition, metrics in summary["conditions"].items():
-        token_text = (
-            f" total_tokens={metrics['total_tokens']}"
-            if metrics["total_tokens"] is not None
-            else ""
-        )
+        tokens_total = metrics["tokens_total"]
+        token_text = f" tokens_total={tokens_total}" if tokens_total is not None else ""
         print(
             f"{condition}: accuracy={metrics['accuracy']:.2%} "
-            f"passed={metrics['passed']}/{metrics['cases']} "
-            f"mean_wall_ms={metrics['mean_wall_ms']} errors={metrics['errors']}"
+            f"passed={metrics['passed']}/{metrics['runs']} "
+            f"wall_ms_p50={metrics['wall_ms_p50']} errors={metrics['errors']}"
             f"{token_text}"
         )
 

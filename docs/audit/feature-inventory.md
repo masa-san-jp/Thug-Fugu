@@ -95,6 +95,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Token usage accounting | `stable` | `orchestrator.py` (`_aggregate_usage`), `backends.py` | `test_orchestrator.py`, `test_backends.py` |
 | Reproducible single-vs-multi evaluation harness | `stable` | `scripts/evaluate_orchestration.py`, `evals/` | `test_evaluate_orchestration.py` |
 | Phase 1 comparison matrix / multi-seed domain statistics | `experimental` | `evals/phase1/`, `scripts/run_phase1_comparison.sh` | `test_evaluate_orchestration.py` |
+| Evaluator seed pass-through, task-level accuracy (`schema_version: 3`), and paired-bootstrap condition comparison (`--repeats`, `seed_sent`, `task_scores`, `worker_outputs[].passed`, `paired`) | `experimental` | `scripts/evaluate_orchestration.py` (`_run_case`, `_summarize`, `_paired_bootstrap_ci`) | `test_evaluate_orchestration.py` |
 
 ### Distributed inference (Epic target)
 
