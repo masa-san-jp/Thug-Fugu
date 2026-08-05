@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import logging
 import time
@@ -29,6 +30,23 @@ logger = logging.getLogger("fugu_local.orchestrator")
 
 class OrchestrationError(RuntimeError):
     """Raised when orchestration cannot produce an answer."""
+
+
+def derive_seed(base_seed: Optional[int], stream_key: str) -> Optional[int]:
+    """Derive a deterministic per-stream seed from a base seed.
+
+    ``stream_key`` identifies the request stream within a run, e.g.
+    ``"worker:planner"``, ``"worker:solver#2"``, ``"synthesizer"``,
+    ``"verifier:attempt1"``, or ``"coordinator"``. Keying by role name (not
+    index) keeps a role's seed stable when other roles are added or reordered,
+    and deriving a distinct seed per stream keeps same-model roles from
+    returning identical output under a shared seed.
+    """
+
+    if base_seed is None:
+        return None
+    digest = hashlib.sha256(f"{base_seed}:{stream_key}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big")
 
 
 @dataclass(frozen=True)
@@ -195,6 +213,7 @@ class FuguLocalOrchestrator:
         *,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        seed: Optional[int] = None,
     ) -> OrchestrationResult:
         if not messages:
             raise OrchestrationError("At least one message is required")
@@ -204,9 +223,14 @@ class FuguLocalOrchestrator:
 
         request_timeout = self.config.orchestrator.request_timeout_seconds
         deadline = started + request_timeout if request_timeout is not None else None
+        effective_seed = self.config.orchestrator.seed if seed is None else seed
 
         user_text = _latest_user_message_text(messages)
-        plan = self._coordinator.plan(user_text) if self._coordinator else None
+        plan = (
+            self._coordinator.plan(user_text, seed=derive_seed(effective_seed, "coordinator"))
+            if self._coordinator
+            else None
+        )
         pattern = plan.pattern if plan else "role_split"
 
         if pattern == "direct":
@@ -216,6 +240,7 @@ class FuguLocalOrchestrator:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 deadline=deadline,
+                seed=effective_seed,
             )
         elif pattern == "parallel_ensemble":
             outcome = self._run_parallel_ensemble(
@@ -225,6 +250,7 @@ class FuguLocalOrchestrator:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 deadline=deadline,
+                seed=effective_seed,
             )
         else:
             outcome = self._run_role_split(
@@ -233,6 +259,7 @@ class FuguLocalOrchestrator:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 deadline=deadline,
+                seed=effective_seed,
             )
 
         (
@@ -556,6 +583,7 @@ class FuguLocalOrchestrator:
         temperature: Optional[float],
         max_tokens: Optional[int],
         deadline: Optional[float] = None,
+        seed: Optional[int] = None,
     ) -> tuple:
         synthesizer = self._select_synthesizer()
         verifier = self._select_verifier()
@@ -580,6 +608,7 @@ class FuguLocalOrchestrator:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 deadline=deadline,
+                seed=seed,
             )
             accounting_worker_results.extend(worker_results)
 
@@ -591,13 +620,15 @@ class FuguLocalOrchestrator:
             ):
                 break
 
+            verifier_attempt = len(verification_attempts) + 1
             verification = self._run_verifier(
                 verifier,
-                attempt=len(verification_attempts) + 1,
+                attempt=verifier_attempt,
                 original_messages=messages,
                 worker_results=worker_results,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                seed=derive_seed(seed, f"verifier:attempt{verifier_attempt}"),
             )
             verification_attempts.append(verification)
             verification_passed = verification.ok
@@ -632,6 +663,7 @@ class FuguLocalOrchestrator:
                     worker_results=worker_results,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    seed=derive_seed(seed, "synthesizer"),
                 )
             except Exception as exc:  # noqa: BLE001 - synthesis is optional fallback path.
                 content = _deterministic_merge(worker_results)
@@ -663,6 +695,7 @@ class FuguLocalOrchestrator:
         temperature: Optional[float],
         max_tokens: Optional[int],
         deadline: Optional[float] = None,
+        seed: Optional[int] = None,
     ) -> tuple:
         worker_roles = self._worker_roles()
         selected = self._select_worker_roles(worker_roles, user_text)
@@ -670,7 +703,12 @@ class FuguLocalOrchestrator:
             raise OrchestrationError("No worker roles are configured")
         role = selected[0]
         worker_results = self._run_workers(
-            [role], messages, temperature=temperature, max_tokens=max_tokens, deadline=deadline
+            [role],
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            deadline=deadline,
+            seed=seed,
         )
         content = worker_results[0].content if worker_results[0].ok else ""
         return (
@@ -695,6 +733,7 @@ class FuguLocalOrchestrator:
         temperature: Optional[float],
         max_tokens: Optional[int],
         deadline: Optional[float] = None,
+        seed: Optional[int] = None,
     ) -> tuple:
         worker_roles = self._worker_roles()
         selected = self._select_worker_roles(worker_roles, user_text)
@@ -714,7 +753,12 @@ class FuguLocalOrchestrator:
             for index in range(max(1, n))
         ]
         worker_results = self._run_workers(
-            members, messages, temperature=temperature, max_tokens=max_tokens, deadline=deadline
+            members,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            deadline=deadline,
+            seed=seed,
         )
 
         synthesizer = self._select_synthesizer()
@@ -732,6 +776,7 @@ class FuguLocalOrchestrator:
                     worker_results=worker_results,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    seed=derive_seed(seed, "synthesizer"),
                 )
             except Exception as exc:  # noqa: BLE001 - synthesis is optional fallback path.
                 content = _majority_vote(ok_results) or _deterministic_merge(worker_results)
@@ -843,6 +888,7 @@ class FuguLocalOrchestrator:
         temperature: Optional[float],
         max_tokens: Optional[int],
         deadline: Optional[float] = None,
+        seed: Optional[int] = None,
     ) -> List[WorkerResult]:
         max_workers = min(len(roles), self.config.orchestrator.max_parallel_workers)
         results_by_role: Dict[str, WorkerResult] = {}
@@ -855,6 +901,7 @@ class FuguLocalOrchestrator:
                     messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    seed=derive_seed(seed, f"worker:{role.name}"),
                 ): role
                 for role in roles
             }
@@ -897,12 +944,14 @@ class FuguLocalOrchestrator:
         *,
         temperature: Optional[float],
         max_tokens: Optional[int],
+        seed: Optional[int] = None,
     ) -> WorkerResult:
         request = self._build_role_request(
             role,
             messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            seed=seed,
         )
         started = time.perf_counter()
         try:
@@ -931,6 +980,7 @@ class FuguLocalOrchestrator:
         worker_results: List[WorkerResult],
         temperature: Optional[float],
         max_tokens: Optional[int],
+        seed: Optional[int] = None,
     ) -> VerificationAttempt:
         verification_messages = [
             ChatMessage(
@@ -960,6 +1010,7 @@ class FuguLocalOrchestrator:
             messages=verification_messages,
             temperature=self._temperature(temperature),
             max_tokens=self._max_tokens(max_tokens),
+            seed=seed,
         )
         started = time.perf_counter()
         try:
@@ -992,6 +1043,7 @@ class FuguLocalOrchestrator:
         worker_results: List[WorkerResult],
         temperature: Optional[float],
         max_tokens: Optional[int],
+        seed: Optional[int] = None,
     ) -> tuple[str, Optional[TokenUsage]]:
         request = self._build_synthesis_request(
             role,
@@ -999,6 +1051,7 @@ class FuguLocalOrchestrator:
             worker_results=worker_results,
             temperature=temperature,
             max_tokens=max_tokens,
+            seed=seed,
         )
         response = self._router_for_role(role).chat(request)
         return response.content, response.usage
@@ -1013,6 +1066,7 @@ class FuguLocalOrchestrator:
         max_tokens: Optional[int],
         tools: Optional[List[dict]] = None,
         tool_choice: Any = None,
+        seed: Optional[int] = None,
     ) -> ChatRequest:
         synthesis_messages = [
             ChatMessage(
@@ -1043,6 +1097,7 @@ class FuguLocalOrchestrator:
             max_tokens=self._max_tokens(max_tokens),
             tools=tools,
             tool_choice=tool_choice,
+            seed=seed,
         )
 
     def _build_role_request(
@@ -1052,6 +1107,7 @@ class FuguLocalOrchestrator:
         *,
         temperature: Optional[float],
         max_tokens: Optional[int],
+        seed: Optional[int] = None,
     ) -> ChatRequest:
         router = self._router_for_role(role)
         role_messages = list(messages)
@@ -1062,6 +1118,7 @@ class FuguLocalOrchestrator:
             messages=role_messages,
             temperature=self._temperature(temperature),
             max_tokens=self._max_tokens(max_tokens),
+            seed=seed,
         )
 
     def _router_for_role(self, role: RoleConfig) -> ModelRouter:
