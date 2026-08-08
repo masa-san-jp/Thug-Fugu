@@ -214,3 +214,58 @@ orchestration when they are only caused by a larger inference budget.
 
 The checked-in Phase 1 matrix and reporting protocol are documented in
 [`phase1-comparison.md`](phase1-comparison.md).
+
+## Error correlation & complementarity analysis (`scripts/analyze_results.py`)
+
+Coordinating multiple models only helps if their mistakes aren't
+correlated, and an accuracy gain needs to be attributable to something
+specific rather than assumed. Run this against a `results.jsonl` produced
+above (any `--output-dir` experiment run, or the legacy `--csv`/`--summary`
+mode's `--jsonl` output) to get that breakdown:
+
+```bash
+PYTHONPATH=src python3 scripts/analyze_results.py \
+  results/experiment-001/results.jsonl \
+  --output-dir results/experiment-001/analysis
+```
+
+Writes `analysis.json` (machine-readable) and `analysis.md` (human-readable
+summary). It never re-runs orchestration and never re-applies task graders
+-- it trusts the `passed` fields WP-1 already recorded (top-level `passed`
+per row, and `worker_outputs[].passed`, the task grader applied to each
+worker's own output independent of the final synthesized answer). Missing
+or old-format (`passed`-less) `worker_outputs` never raises; the affected
+metric is set to `null` and the reason is appended to `analysis.json.
+warnings`.
+
+Metrics, all computed per `condition` and, in `by_domain`, per `domain` too:
+
+| Metric | Definition |
+|---|---|
+| `correctness_matrix` | task (`case_id`) × condition → mean of `passed` across repeats (0.0-1.0, not yet majority-voted) |
+| `condition_pair_correlation` | for every pair of conditions, the phi coefficient and raw agreement rate between their **majority-voted** (repeats → 0/1) per-task correctness |
+| `worker_pair_correlation` | same, but between pairs of worker roles (`worker_outputs[].role`) *within* one condition, using `worker_outputs[].passed` |
+| `oracle_upper_bound` | fraction of tasks where **at least one** worker in that condition got it right (majority-voted across repeats) |
+| `synthesizer_damage_rate` | of tasks where the oracle was right, the fraction where the condition's **final** answer was still wrong |
+| `synthesizer_repair_rate` | of tasks where the oracle was wrong, the fraction where the final answer was right anyway |
+| `quality_per_1k_tokens` | correct rows ÷ (total `usage.total_tokens` across all rows in the condition ÷ 1000) |
+| `cost_per_correct` | total `wall_ms` (and separately, total tokens) across **all** rows in the condition, divided by the number of correct rows -- the full cost of getting one right answer, including failed attempts |
+| `stage_contributions` | reserved for WP-7's ablation harness output (`condition_metadata.ablation_baseline` + non-empty `stage_results`); always empty with a warning until WP-7 exists |
+
+The phi coefficient uses the standard 2×2 contingency-table formula
+(`n11`=both right, `n10`=A only, `n01`=B only, `n00`=both wrong):
+
+```
+phi = (n11*n00 - n10*n01) / sqrt((n11+n10)*(n01+n00)*(n11+n01)*(n10+n00))
+```
+
+`null` when the denominator is zero (no variance in one of the two
+series). Every phi coefficient ships with a `phi_ci95` bootstrap 95%
+confidence interval, computed with a fresh, fixed-seed
+(`random.Random(20260802)`) resample of the paired task outcomes -- fully
+deterministic for a given input, no scipy/numpy dependency.
+
+`damage_rate`/`repair_rate` are conditional rates (damage: correct-among-
+workers but wrong-overall; repair: wrong-among-all-workers but
+right-overall), each `null` when its denominator (the oracle-true or
+oracle-false task count) is zero.
