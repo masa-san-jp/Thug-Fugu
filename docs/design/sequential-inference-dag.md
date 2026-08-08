@@ -124,8 +124,18 @@ class StageOutput:
 
 サンプル設定は
 [`examples/fugu-local.sequential-dag.json`](../../examples/fugu-local.sequential-dag.json)
-を参照（`fugu-local run "..." --config examples/fugu-local.sequential-dag.json` で
-EchoBackend により実行できる）。
+を参照。サンプルの明示的な rule を発火させるため、次のように `run the dag` を
+プロンプトに含めると EchoBackend で実行できる。
+
+```bash
+fugu-local run "run the dag: explain the trade-offs" \
+  --config examples/fugu-local.sequential-dag.json
+```
+
+`default_pattern` は rule・組み込み heuristic・meta coordinator のいずれにも
+一致しない場合の fallback であり、短いプロンプトは heuristic により `direct`
+へルーティングされる。そのため、DAGを確実に選択する運用では明示的な
+`rules[].pattern: "sequential_dag"` を使用する。
 
 ## 6. stage 別 bypass 規則
 

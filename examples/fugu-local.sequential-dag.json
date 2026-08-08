@@ -36,6 +36,9 @@
   "coordinator": {
     "enabled": true,
     "default_pattern": "sequential_dag",
+    "rules": [
+      {"match": ["run the dag"], "pattern": "sequential_dag"}
+    ],
     "dag": {
       "stages": [
         {"name": "planner", "role": "planner"},

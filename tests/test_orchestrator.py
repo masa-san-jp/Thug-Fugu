@@ -1,7 +1,8 @@
 import unittest
+from pathlib import Path
 
 from fugu_local.backends import ChatMessage, ChatResponse, ChatStreamChunk, TokenUsage
-from fugu_local.config import config_from_dict
+from fugu_local.config import config_from_dict, load_config
 from fugu_local.orchestrator import FuguLocalOrchestrator, OrchestrationError, derive_seed
 
 
@@ -1585,6 +1586,19 @@ def make_sequential_dag_backends():
 
 
 class SequentialDagTests(unittest.TestCase):
+    def test_example_config_selects_dag_for_documented_prompt(self):
+        config_path = (
+            Path(__file__).resolve().parents[1] / "examples" / "fugu-local.sequential-dag.json"
+        )
+        orchestrator = FuguLocalOrchestrator(load_config(config_path))
+
+        result = orchestrator.chat(
+            [ChatMessage(role="user", content="run the dag: explain the trade-offs")]
+        )
+
+        self.assertEqual(result.pattern, "sequential_dag")
+        self.assertEqual(len(result.stage_results), 8)
+
     def test_end_to_end_run_produces_content_and_stage_results(self):
         config = make_sequential_dag_config()
         orchestrator = FuguLocalOrchestrator(
