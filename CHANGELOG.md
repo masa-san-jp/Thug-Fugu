@@ -49,7 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   makes one additional call to a judge role (`coordinator.ensemble.judge_role`,
   or a `roles[]` entry with `is_verifier: true`) to pick between the tied
   candidates. Falls back to the normalized-majority tie-break if the judge
-  call fails or returns an unparseable choice.
+  call fails or returns an unparseable choice. Judge calls receive a
+  deterministic per-role seed, contribute their token usage to the final run
+  total, and emit a content-free warning when fallback is required.
 - `OrchestrationResult.vote_summary` (cluster count, winning vote count,
   whether normalization was applied, whether the judge was called) is now
   recorded for `parallel_ensemble` runs and included in structured run logs.

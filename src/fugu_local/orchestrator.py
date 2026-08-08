@@ -797,13 +797,22 @@ class FuguLocalOrchestrator:
                     seed=derive_seed(seed, "synthesizer"),
                 )
             except Exception as exc:  # noqa: BLE001 - synthesis is optional fallback path.
-                content, vote_summary = self._vote_content(
-                    ok_results, vote="majority", deadline=deadline
+                content, vote_summary, vote_usage = self._vote_content(
+                    ok_results,
+                    vote="majority",
+                    deadline=deadline,
+                    seed=seed,
                 )
+                synthesis_usage = vote_usage
                 content = content or _deterministic_merge(worker_results)
                 synthesis_error = str(exc)
         elif ok_results:
-            content, vote_summary = self._vote_content(ok_results, vote=vote, deadline=deadline)
+            content, vote_summary, synthesis_usage = self._vote_content(
+                ok_results,
+                vote=vote,
+                deadline=deadline,
+                seed=seed,
+            )
         else:
             content = _deterministic_merge(worker_results)
 
@@ -1083,7 +1092,8 @@ class FuguLocalOrchestrator:
         *,
         vote: str,
         deadline: Optional[float] = None,
-    ) -> tuple[str, VoteSummary]:
+        seed: Optional[int] = None,
+    ) -> tuple[str, VoteSummary, Optional[TokenUsage]]:
         """Consolidate ensemble worker output by (normalized) majority vote.
 
         ``vote="majority"`` always uses normalized (or, with
@@ -1099,49 +1109,73 @@ class FuguLocalOrchestrator:
         clusters = answers.cluster_answers(contents) if normalize else _exact_clusters(contents)
 
         if not clusters:
-            return "", VoteSummary(
-                clusters=0, winning_votes=0, normalized=normalize, judge_called=False
+            return (
+                "",
+                VoteSummary(clusters=0, winning_votes=0, normalized=normalize, judge_called=False),
+                None,
             )
 
         max_size = max(len(cluster) for cluster in clusters)
         tied = [cluster for cluster in clusters if len(cluster) == max_size]
 
         if vote == "judge_tiebreak" and len(tied) > 1 and not _deadline_passed(deadline):
-            chosen_index = self._judge_tiebreak(results, tied)
+            chosen_index, judge_usage = self._judge_tiebreak(results, tied, seed=seed)
             if chosen_index is not None:
                 winning_cluster = next(cluster for cluster in clusters if chosen_index in cluster)
-                return contents[chosen_index], VoteSummary(
-                    clusters=len(clusters),
-                    winning_votes=len(winning_cluster),
-                    normalized=normalize,
-                    judge_called=True,
+                return (
+                    contents[chosen_index],
+                    VoteSummary(
+                        clusters=len(clusters),
+                        winning_votes=len(winning_cluster),
+                        normalized=normalize,
+                        judge_called=True,
+                    ),
+                    judge_usage,
                 )
             winner, votes = _majority_from_clusters(contents, clusters, normalize)
-            return winner, VoteSummary(
-                clusters=len(clusters), winning_votes=votes, normalized=normalize, judge_called=True
+            return (
+                winner,
+                VoteSummary(
+                    clusters=len(clusters),
+                    winning_votes=votes,
+                    normalized=normalize,
+                    judge_called=True,
+                ),
+                judge_usage,
             )
 
         winner, votes = _majority_from_clusters(contents, clusters, normalize)
-        return winner, VoteSummary(
-            clusters=len(clusters), winning_votes=votes, normalized=normalize, judge_called=False
+        return (
+            winner,
+            VoteSummary(
+                clusters=len(clusters),
+                winning_votes=votes,
+                normalized=normalize,
+                judge_called=False,
+            ),
+            None,
         )
 
     def _judge_tiebreak(
         self,
         results: List[WorkerResult],
         tied_clusters: List[List[int]],
-    ) -> Optional[int]:
+        *,
+        seed: Optional[int] = None,
+    ) -> tuple[Optional[int], Optional[TokenUsage]]:
         """Ask the ensemble judge role to pick among tied candidates.
 
-        Returns the chosen candidate's index into ``results``, or ``None`` if
-        no judge is configured, the judge call fails, or its response cannot
-        be parsed as a valid choice (the caller falls back to the normalized-
-        majority tie-break in every ``None`` case).
+        Returns the chosen candidate's index into ``results`` and the judge
+        call's usage. The index is ``None`` if no judge is configured, the
+        judge call fails, or its response cannot be parsed as a valid choice
+        (the caller falls back to the normalized-majority tie-break). Usage is
+        preserved for a successful backend response even when parsing fails.
         """
 
         judge = self._select_ensemble_judge()
         if judge is None:
-            return None
+            logger.warning("ensemble judge is unavailable; falling back to majority tie-break")
+            return None, None
         candidates = [cluster[0] for cluster in tied_clusters]
         candidate_lines = [
             f"[{position}] {results[index].content}" for position, index in enumerate(candidates)
@@ -1166,15 +1200,26 @@ class FuguLocalOrchestrator:
             messages=judge_messages,
             temperature=self._temperature(None),
             max_tokens=self._max_tokens(None),
+            seed=derive_seed(seed, f"ensemble-judge:{judge.name}"),
         )
         try:
             response = router.chat(request)
-        except Exception:  # noqa: BLE001 - judge failure falls back to normalized majority.
-            return None
+        except Exception as exc:  # noqa: BLE001 - judge failure falls back to majority.
+            logger.warning(
+                "ensemble judge role %s failed; falling back to majority tie-break: %s",
+                judge.name,
+                exc,
+            )
+            return None, None
         choice = _parse_judge_choice(response.content, len(candidates))
         if choice is None:
-            return None
-        return candidates[choice]
+            logger.warning(
+                "ensemble judge role %s returned an invalid choice; "
+                "falling back to majority tie-break",
+                judge.name,
+            )
+            return None, response.usage
+        return candidates[choice], response.usage
 
     def _synthesize(
         self,

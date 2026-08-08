@@ -1451,6 +1451,60 @@ class EnsembleVoteTests(unittest.TestCase):
         self.assertFalse(clear_result.vote_summary.judge_called)
         self.assertEqual(clear_result.content, "42")
 
+    def test_judge_tiebreak_propagates_seed_and_counts_usage(self):
+        judge = StaticBackend(
+            '{"choice": 1}',
+            usage=TokenUsage(prompt_tokens=6, completion_tokens=7, total_tokens=13),
+        )
+        planner = SequenceBackend(
+            ["42", "43"],
+            usages=[
+                TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+                TokenUsage(prompt_tokens=4, completion_tokens=5, total_tokens=9),
+            ],
+        )
+        orchestrator = FuguLocalOrchestrator(
+            make_judge_tiebreak_config(n=2),
+            backend_overrides={
+                "planner-model": planner,
+                "judge-model": judge,
+                "synth-model": StaticBackend("x"),
+            },
+        )
+
+        result = orchestrator.chat(
+            [ChatMessage(role="user", content="2案を比較して")],
+            seed=42,
+        )
+
+        self.assertEqual(judge.calls[0].seed, derive_seed(42, "ensemble-judge:judge"))
+        self.assertEqual(result.content, "43")
+        self.assertEqual(result.usage.prompt_tokens, 11)
+        self.assertEqual(result.usage.completion_tokens, 14)
+        self.assertEqual(result.usage.total_tokens, 25)
+
+    def test_judge_tiebreak_invalid_choice_counts_usage_and_warns(self):
+        judge = StaticBackend(
+            '{"choice": 99}',
+            usage=TokenUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5),
+        )
+        planner = SequenceBackend(["43", "42"])
+        orchestrator = FuguLocalOrchestrator(
+            make_judge_tiebreak_config(n=2),
+            backend_overrides={
+                "planner-model": planner,
+                "judge-model": judge,
+                "synth-model": StaticBackend("x"),
+            },
+        )
+
+        with self.assertLogs("fugu_local.orchestrator", level="WARNING") as captured:
+            result = orchestrator.chat([ChatMessage(role="user", content="2案を比較して")])
+
+        self.assertEqual(result.content, "43")
+        self.assertEqual(result.usage.total_tokens, 5)
+        self.assertTrue(any("invalid choice" in message for message in captured.output))
+
     def test_judge_tiebreak_falls_back_when_judge_fails(self):
         failing_judge = FailingBackend()
         tied_planner = SequenceBackend(["43", "42"])
@@ -1463,9 +1517,11 @@ class EnsembleVoteTests(unittest.TestCase):
             },
         )
 
-        result = orchestrator.chat([ChatMessage(role="user", content="2案を比較して")])
+        with self.assertLogs("fugu_local.orchestrator", level="WARNING") as captured:
+            result = orchestrator.chat([ChatMessage(role="user", content="2案を比較して")])
 
         self.assertTrue(result.vote_summary.judge_called)
         # Falls back to the normalized-majority tie-break: the earliest
         # tied cluster (member #1's answer) wins.
         self.assertEqual(result.content, "43")
+        self.assertTrue(any("failed" in message for message in captured.output))
