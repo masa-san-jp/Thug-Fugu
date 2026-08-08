@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import hashlib
 import json
 import logging
 import time
@@ -24,30 +23,18 @@ from .config import FuguLocalConfig, ModelConfig, ModelPoolConfig, RoleConfig
 from .coordinator import Coordinator, Plan
 from .health import HealthMonitor
 from .routing import ModelRouter, RouterMember
+from .seeding import derive_seed
 from .tools import ToolExecutionError, ToolResult, execute_tool_calls, parse_tool_calls
 
 logger = logging.getLogger("fugu_local.orchestrator")
 
+# derive_seed is defined in seeding.py (imported above) and re-exported here
+# unchanged, since existing call sites (evaluate_orchestration.py, tests) do
+# `from fugu_local.orchestrator import derive_seed`.
+
 
 class OrchestrationError(RuntimeError):
     """Raised when orchestration cannot produce an answer."""
-
-
-def derive_seed(base_seed: Optional[int], stream_key: str) -> Optional[int]:
-    """Derive a deterministic per-stream seed from a base seed.
-
-    ``stream_key`` identifies the request stream within a run, e.g.
-    ``"worker:planner"``, ``"worker:solver#2"``, ``"synthesizer"``,
-    ``"verifier:attempt1"``, or ``"coordinator"``. Keying by role name (not
-    index) keeps a role's seed stable when other roles are added or reordered,
-    and deriving a distinct seed per stream keeps same-model roles from
-    returning identical output under a shared seed.
-    """
-
-    if base_seed is None:
-        return None
-    digest = hashlib.sha256(f"{base_seed}:{stream_key}".encode("utf-8")).digest()
-    return int.from_bytes(digest[:4], "big")
 
 
 @dataclass(frozen=True)

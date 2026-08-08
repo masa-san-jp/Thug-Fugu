@@ -10,9 +10,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from .stages import STAGE_NAMES
+
 SUPPORTED_BACKENDS = {"ollama", "openai-compatible", "echo"}
 SUPPORTED_SELECTION_POLICIES = {"all", "keyword"}
-SUPPORTED_PATTERNS = {"direct", "role_split", "parallel_ensemble"}
+SUPPORTED_PATTERNS = {"direct", "role_split", "parallel_ensemble", "sequential_dag"}
+DAG_FANOUT_STAGE = "solver"
+DAG_NON_DISABLEABLE_STAGES = {"solver", "writer"}
 SUPPORTED_ENSEMBLE_VOTES = {"synth", "majority", "judge_tiebreak"}
 SUPPORTED_TOOL_CALLING_MODES = {"disabled", "synthesizer_only"}
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -104,6 +108,20 @@ class VerifyConfig:
 
 
 @dataclass(frozen=True)
+class DagStageConfig:
+    name: str
+    role: str
+    enabled: bool = True
+    fanout: int = 1
+
+
+@dataclass(frozen=True)
+class DagConfig:
+    stages: List[DagStageConfig] = field(default_factory=list)
+    max_stage_tokens: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class CoordinatorConfig:
     enabled: bool = False
     meta_model: Optional[str] = None
@@ -111,6 +129,7 @@ class CoordinatorConfig:
     rules: List[CoordinatorRule] = field(default_factory=list)
     ensemble: EnsembleConfig = field(default_factory=EnsembleConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
+    dag: DagConfig = field(default_factory=DagConfig)
 
 
 @dataclass(frozen=True)
@@ -297,6 +316,7 @@ def _coordinator_from_dict(raw: Any) -> CoordinatorConfig:
     rules = [_coordinator_rule_from_dict(item) for item in _optional_list(obj, "rules")]
     ensemble = _ensemble_from_dict(obj.get("ensemble", {}))
     verify = _verify_from_dict(obj.get("verify", {}))
+    dag = _dag_from_dict(obj.get("dag", {}))
     return CoordinatorConfig(
         enabled=_optional_bool(obj, "enabled", default=False),
         meta_model=_optional_str(obj, "meta_model"),
@@ -304,6 +324,7 @@ def _coordinator_from_dict(raw: Any) -> CoordinatorConfig:
         rules=rules,
         ensemble=ensemble,
         verify=verify,
+        dag=dag,
     )
 
 
@@ -343,6 +364,28 @@ def _verify_from_dict(raw: Any) -> VerifyConfig:
         enabled=_optional_bool(obj, "enabled", default=False),
         max_retries=max_retries if max_retries is not None else 1,
         role=_optional_str(obj, "role"),
+    )
+
+
+def _dag_from_dict(raw: Any) -> DagConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "coordinator.dag")
+    stages = [_dag_stage_from_dict(item) for item in _optional_list(obj, "stages")]
+    return DagConfig(
+        stages=stages,
+        max_stage_tokens=_optional_int(obj, "max_stage_tokens", default=None),
+    )
+
+
+def _dag_stage_from_dict(raw: Any) -> DagStageConfig:
+    obj = _required_object(raw, "coordinator.dag stage entry")
+    fanout = _optional_int(obj, "fanout", default=1)
+    return DagStageConfig(
+        name=_required_str(obj, "name"),
+        role=_required_str(obj, "role"),
+        enabled=_optional_bool(obj, "enabled", default=True),
+        fanout=fanout if fanout is not None else 1,
     )
 
 
@@ -400,6 +443,54 @@ def _validate_coordinator(config: FuguLocalConfig, model_names: set) -> None:
         raise ConfigError(
             "coordinator.ensemble.vote='judge_tiebreak' requires "
             "coordinator.ensemble.judge_role or a roles[] entry with is_verifier=true"
+        )
+    _validate_dag(config, role_names)
+
+
+def _validate_dag(config: FuguLocalConfig, role_names: set) -> None:
+    dag = config.coordinator.dag
+    seen_names: set = set()
+    for stage in dag.stages:
+        if stage.name not in STAGE_NAMES:
+            raise ConfigError(
+                f"Unsupported coordinator.dag stage name '{stage.name}'. "
+                f"Supported: {sorted(STAGE_NAMES)}"
+            )
+        if stage.name in seen_names:
+            raise ConfigError(f"Duplicate coordinator.dag stage name '{stage.name}'")
+        seen_names.add(stage.name)
+        if stage.role not in role_names:
+            raise ConfigError(
+                f"coordinator.dag stage '{stage.name}' references unknown role '{stage.role}'"
+            )
+        if stage.fanout < 1:
+            raise ConfigError(f"coordinator.dag stage '{stage.name}'.fanout must be positive")
+        if stage.name != DAG_FANOUT_STAGE and stage.fanout != 1:
+            raise ConfigError(
+                f"coordinator.dag stage '{stage.name}' sets fanout, but fanout only "
+                f"applies to the '{DAG_FANOUT_STAGE}' stage"
+            )
+        if not stage.enabled and stage.name in DAG_NON_DISABLEABLE_STAGES:
+            raise ConfigError(
+                f"coordinator.dag stage '{stage.name}' cannot be disabled (enabled=false)"
+            )
+    if dag.stages:
+        for required in sorted(DAG_NON_DISABLEABLE_STAGES):
+            if required not in seen_names:
+                raise ConfigError(
+                    f"coordinator.dag.stages must include a '{required}' stage entry "
+                    "(it cannot be disabled or omitted)"
+                )
+    if dag.max_stage_tokens is not None and dag.max_stage_tokens <= 0:
+        raise ConfigError("coordinator.dag.max_stage_tokens must be positive when provided")
+
+    sequential_dag_selectable = config.coordinator.default_pattern == "sequential_dag" or any(
+        rule.pattern == "sequential_dag" for rule in config.coordinator.rules
+    )
+    if sequential_dag_selectable and config.tool_calling.enabled:
+        raise ConfigError(
+            "tool_calling.enabled=true cannot be combined with a coordinator "
+            "default_pattern/rule that selects 'sequential_dag'"
         )
 
 
