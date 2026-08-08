@@ -138,7 +138,10 @@ def _grade(content: str, grader: dict) -> bool:
         pattern = grader.get("pattern")
         if not isinstance(pattern, str):
             raise ValueError("regex grader requires string pattern")
-        return re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) is not None
+        try:
+            return re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE) is not None
+        except re.error as exc:
+            raise ValueError(f"regex grader pattern is invalid: {exc}") from exc
     if grader_type == "exact":
         value = grader.get("value")
         if not isinstance(value, str):

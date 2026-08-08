@@ -123,6 +123,15 @@ class SchemaViolationTests(unittest.TestCase):
 
         self.assertTrue(any("grader definition is invalid" in e for e in errors))
 
+    def test_invalid_regex_pattern_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_task = _make_task("bad-regex-1", "math")
+            bad_task["grader"] = {"type": "regex", "pattern": "["}
+            paths = self._fixture_with_extra_task(tmp, "test", bad_task)
+            errors = validate_tasks.validate_files(paths)
+
+        self.assertTrue(any("regex grader pattern is invalid" in e for e in errors))
+
     def test_empty_gold_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             bad_task = _make_task("bad-gold-empty-1", "math")
