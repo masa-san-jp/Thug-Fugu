@@ -1331,3 +1331,141 @@ class SeedPropagationTests(unittest.TestCase):
         expected = {derive_seed(42, f"worker:planner#{index}") for index in range(1, 4)}
         self.assertEqual(len(planner.calls), 3)
         self.assertEqual(seeds, expected)
+
+
+def make_judge_tiebreak_config(n=2, max_parallel_workers=1):
+    return config_from_dict(
+        {
+            "models": [
+                {"name": "planner-model", "backend": "echo", "model": "mock-planner"},
+                {"name": "judge-model", "backend": "echo", "model": "mock-judge"},
+                {"name": "synth-model", "backend": "echo", "model": "mock-synth"},
+            ],
+            "roles": [
+                {"name": "planner", "model": "planner-model", "system_prompt": "plan"},
+                {
+                    "name": "judge",
+                    "model": "judge-model",
+                    "system_prompt": "judge",
+                    "is_verifier": True,
+                },
+                {
+                    "name": "synthesizer",
+                    "model": "synth-model",
+                    "system_prompt": "synth",
+                    "is_synthesizer": True,
+                },
+            ],
+            "orchestrator": {
+                "selection_policy": "all",
+                "max_parallel_workers": max_parallel_workers,
+            },
+            "coordinator": {
+                "enabled": True,
+                "rules": [{"match": ["比較"], "pattern": "parallel_ensemble"}],
+                "ensemble": {"n": n, "vote": "judge_tiebreak"},
+            },
+        }
+    )
+
+
+class EnsembleVoteTests(unittest.TestCase):
+    def test_majority_vote_normalizes_equivalent_answers(self):
+        config = make_coordinator_config(
+            {
+                "enabled": True,
+                "rules": [{"match": ["比較"], "pattern": "parallel_ensemble"}],
+                "ensemble": {"n": 3, "vote": "majority"},
+            }
+        )
+        # "42" and "**42**" normalize to the same answer; "43" does not.
+        planner = SequenceBackend(["42", "**42**", "43"])
+        orchestrator = FuguLocalOrchestrator(
+            config,
+            backend_overrides={"planner-model": planner, "synth-model": StaticBackend("x")},
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="2案を比較して")])
+
+        self.assertIn(result.content, {"42", "**42**"})
+        self.assertEqual(result.vote_summary.clusters, 2)
+        self.assertEqual(result.vote_summary.winning_votes, 2)
+        self.assertTrue(result.vote_summary.normalized)
+        self.assertFalse(result.vote_summary.judge_called)
+
+    def test_majority_vote_exact_mode_when_normalize_false(self):
+        config = make_coordinator_config(
+            {
+                "enabled": True,
+                "rules": [{"match": ["比較"], "pattern": "parallel_ensemble"}],
+                "ensemble": {"n": 3, "vote": "majority", "normalize": False},
+            }
+        )
+        # Under exact matching, "42" and "**42**" are distinct strings, so the
+        # two "**42**" answers form the majority instead of all three tying.
+        planner = SequenceBackend(["42", "**42**", "**42**"])
+        orchestrator = FuguLocalOrchestrator(
+            config,
+            backend_overrides={"planner-model": planner, "synth-model": StaticBackend("x")},
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="2案を比較して")])
+
+        self.assertEqual(result.content, "**42**")
+        self.assertEqual(result.vote_summary.clusters, 2)
+        self.assertEqual(result.vote_summary.winning_votes, 2)
+        self.assertFalse(result.vote_summary.normalized)
+
+    def test_judge_tiebreak_called_only_on_tie(self):
+        tie_judge = StaticBackend('{"choice": 1}')
+        tied_planner = SequenceBackend(["42", "43"])
+        tied_orchestrator = FuguLocalOrchestrator(
+            make_judge_tiebreak_config(n=2),
+            backend_overrides={
+                "planner-model": tied_planner,
+                "judge-model": tie_judge,
+                "synth-model": StaticBackend("x"),
+            },
+        )
+
+        tied_result = tied_orchestrator.chat([ChatMessage(role="user", content="2案を比較して")])
+
+        self.assertEqual(len(tie_judge.calls), 1)
+        self.assertTrue(tied_result.vote_summary.judge_called)
+        self.assertEqual(tied_result.content, "43")  # judge chose index 1
+
+        clear_judge = StaticBackend('{"choice": 0}')
+        clear_planner = SequenceBackend(["42", "42", "43"])
+        clear_orchestrator = FuguLocalOrchestrator(
+            make_judge_tiebreak_config(n=3),
+            backend_overrides={
+                "planner-model": clear_planner,
+                "judge-model": clear_judge,
+                "synth-model": StaticBackend("x"),
+            },
+        )
+
+        clear_result = clear_orchestrator.chat([ChatMessage(role="user", content="2案を比較して")])
+
+        self.assertEqual(len(clear_judge.calls), 0)
+        self.assertFalse(clear_result.vote_summary.judge_called)
+        self.assertEqual(clear_result.content, "42")
+
+    def test_judge_tiebreak_falls_back_when_judge_fails(self):
+        failing_judge = FailingBackend()
+        tied_planner = SequenceBackend(["43", "42"])
+        orchestrator = FuguLocalOrchestrator(
+            make_judge_tiebreak_config(n=2),
+            backend_overrides={
+                "planner-model": tied_planner,
+                "judge-model": failing_judge,
+                "synth-model": StaticBackend("x"),
+            },
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="2案を比較して")])
+
+        self.assertTrue(result.vote_summary.judge_called)
+        # Falls back to the normalized-majority tie-break: the earliest
+        # tied cluster (member #1's answer) wins.
+        self.assertEqual(result.content, "43")
