@@ -97,6 +97,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Reproducible single-vs-multi evaluation harness | `stable` | `scripts/evaluate_orchestration.py`, `evals/` | `test_evaluate_orchestration.py` |
 | Phase 1 comparison matrix / multi-seed domain statistics | `experimental` | `evals/phase1/`, `scripts/run_phase1_comparison.sh` | `test_evaluate_orchestration.py` |
 | Evaluator seed pass-through, task-level accuracy (`schema_version: 3`), and paired-bootstrap condition comparison (`--repeats`, `seed_sent`, `task_scores`, `worker_outputs[].passed`, `paired`) | `experimental` | `scripts/evaluate_orchestration.py` (`_run_case`, `_summarize`, `_paired_bootstrap_ci`) | `test_evaluate_orchestration.py` |
+| Hard-benchmark-v2 task schema validator (`scripts/validate_tasks.py`, WP-2a): cross-file `id` uniqueness, `family`/`difficulty`/`answer_type`/`grader.type` allow-lists (rejects `exec`/rubric graders), gold self-consistency check, calibration/dev/test split size and per-family minimums, easy-task ratio cap. The task files themselves (`evals/phase2/tasks-v2-*.jsonl`, WP-2b) do not exist yet and require human review before use (`review_status`) | `partial` (validator implemented; task files pending WP-2b + human review, see `docs/operations/benchmark-v2.md`) | `scripts/validate_tasks.py` | `test_validate_tasks.py` |
 
 ### Distributed inference (Epic target)
 
