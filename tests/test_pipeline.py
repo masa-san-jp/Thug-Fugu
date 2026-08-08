@@ -9,14 +9,17 @@ class RecordingCaller:
     """Stub StageCaller: records every request and returns a scripted
     response keyed by stage name, falling back to a default response."""
 
-    def __init__(self, responses, default='{"answer": "ok"}', errors=None):
+    def __init__(self, responses, default='{"answer": "ok"}', errors=None, exceptions=None):
         self.responses = responses
         self.default = default
         self.errors = errors or {}
+        self.exceptions = exceptions or {}
         self.requests = []
 
     def __call__(self, request):
         self.requests.append(request)
+        if request.stage in self.exceptions:
+            raise self.exceptions[request.stage]
         if request.stage in self.errors:
             return StageCallResult(error=self.errors[request.stage])
         text = self.responses.get(request.stage, self.default)
@@ -213,6 +216,36 @@ class ParseFailureTests(unittest.TestCase):
         self.assertEqual(result.content, "solver-recovers")
         writer_output = next(o for o in result.stage_results if o.stage == "writer")
         self.assertEqual(writer_output.parse_error, "backend unreachable")
+
+    def test_backend_exception_does_not_raise_and_falls_back(self):
+        stages = _replace_stage(full_stages(), "critic", enabled=False)
+        caller = RecordingCaller(
+            {"solver": '{"answer": "solver-recovers-from-exception"}'},
+            exceptions={"writer": RuntimeError("backend exploded")},
+        )
+
+        result = run_sequential_dag(stages, caller, "task")
+
+        self.assertEqual(result.content, "solver-recovers-from-exception")
+        writer_output = next(o for o in result.stage_results if o.stage == "writer")
+        self.assertEqual(writer_output.parse_error, "backend exploded")
+
+    def test_invalid_stage_caller_result_does_not_raise(self):
+        class InvalidResultCaller(RecordingCaller):
+            def __call__(self, request):
+                if request.stage == "writer":
+                    self.requests.append(request)
+                    return None
+                return super().__call__(request)
+
+        stages = _replace_stage(full_stages(), "critic", enabled=False)
+        caller = InvalidResultCaller({"solver": '{"answer": "solver-recovers-from-none"}'})
+
+        result = run_sequential_dag(stages, caller, "task")
+
+        self.assertEqual(result.content, "solver-recovers-from-none")
+        writer_output = next(o for o in result.stage_results if o.stage == "writer")
+        self.assertIn("call_stage must return StageCallResult", writer_output.parse_error)
 
 
 if __name__ == "__main__":

@@ -147,7 +147,14 @@ class _PipelineRun:
             seed=seed,
             max_tokens=self._max_stage_tokens,
         )
-        result = self._call_stage(request)
+        try:
+            result = self._call_stage(request)
+            if not isinstance(result, StageCallResult):
+                raise TypeError(
+                    f"call_stage must return StageCallResult, got {type(result).__name__}"
+                )
+        except Exception as exc:  # noqa: BLE001 - stage failures degrade to parse_error.
+            result = StageCallResult(error=str(exc) or type(exc).__name__)
         if result.error is not None:
             output = StageOutput(stage=stage_name, role=role, answer="", parse_error=result.error)
         else:
