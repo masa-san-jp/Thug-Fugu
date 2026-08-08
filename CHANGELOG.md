@@ -97,6 +97,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disk; a subprocess-based code-execution verifier was evaluated and
   rejected as unsafe to implement without an external, human-gated sandbox
   (see `docs/operations/security-profile.md`).
+- New `scripts/analyze_results.py`: error-correlation and complementarity
+  analysis of a `results.jsonl` produced by `evaluate_orchestration.py`.
+  Computes a task×condition correctness matrix; condition-pair and
+  worker-pair phi coefficients (with a deterministic, fixed-seed bootstrap
+  95% CI) to check whether errors are actually uncorrelated; oracle upper
+  bound (fraction of tasks where at least one worker was right); the
+  synthesizer's conditional damage rate (right-among-workers but
+  wrong-overall) and repair rate (wrong-among-all-workers but
+  right-overall); quality-per-1k-tokens and cost-per-correct; and a
+  by-domain breakdown of all of the above. Trusts the `passed`/
+  `worker_outputs[].passed` fields WP-1 already recorded instead of
+  re-applying task graders. Never raises on missing/old-format
+  `worker_outputs`: the affected metric becomes `null` and the reason is
+  recorded in `analysis.json.warnings`. `stage_contributions` (ablation
+  attribution) is wired for WP-7's future output but stays empty with a
+  warning until WP-7 exists. Writes `analysis.json` and `analysis.md`. See
+  `docs/operations/evaluation-harness.md`.
 
 ### Changed
 - **Breaking**: `coordinator.ensemble.vote: "majority"` now normalizes
