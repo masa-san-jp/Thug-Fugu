@@ -77,7 +77,7 @@ planによる動的role→model assignment、自己再帰、学習ルーター�
       {"role": "worker",   "model": "<...>"},
       {"role": "verifier", "model": "<...>"}
     ],
-    "ensemble": {"pool": "<pool>", "n": 3, "vote": "synth|majority"}  // parallel時のみ
+    "ensemble": {"pool": "<pool>", "n": 3, "vote": "synth|majority|judge_tiebreak"}  // parallel時のみ
   }
   ```
 - **決定方式（2段・非学習）**：
@@ -94,6 +94,20 @@ planによる動的role→model assignment、自己再帰、学習ルーター�
 - `direct`：assignments[0] の 1 モデルへ単発。
 - `role_split`：Thinker（分解/方針）→ Worker（実行）→ Verifier（検証）を直列＋必要に応じ Worker 並列。異種モデル可。
 - `parallel_ensemble`：pool の N endpoint へ同一/近似プロンプトを並列投入→ vote（多数決 or synthesizer 統合）。
+  多数決（`coordinator.ensemble.vote`）は3種類実装済み：
+  - `synth`：synthesizer role が候補を統合する（既定）。
+  - `majority`：**normalized majority**。`coordinator.ensemble.normalize`（既定 `true`）が
+    有効な間は、`src/fugu_local/answers.py` の正規化（Unicode NFKC・Markdown/コードフェンス除去・
+    接頭辞除去・空白/大小文字/数値表記の正規化）で候補をクラスタ化してから多数決する。
+    `42` と `**42**` のような表記ゆれが別票に割れるのを防ぐ。`normalize: false` で
+    旧来の完全一致多数決に戻せる。あくまで文字列正規化によるクラスタリングであり、
+    意味的同値判定ではない（"semantic" とは呼ばない）。
+  - `judge_tiebreak`：normalized majority を先に行い、最大クラスタが同数で並んだときのみ
+    judge role（`coordinator.ensemble.judge_role`、未指定時は `is_verifier` role）へ
+    1 回だけ選択を委ねる。judge 呼び出しが失敗・不正応答の場合は normalized majority の
+    tie-break（先着クラスタ優先）へフォールバックする。
+  投票の内訳（クラスタ数・得票数・正規化有無・judge 呼び出し有無）は
+  `OrchestrationResult.vote_summary` に記録される。
 - いずれも最後に Synthesizer（任意）で 1 つに統合。なければ決定論マージ（既存）。
 
 ### 6.4 モデルプール＋LB＋health＋failover（`distributed-inference.md` と共通部品）

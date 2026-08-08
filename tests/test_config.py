@@ -145,6 +145,76 @@ class CoordinatorConfigTests(unittest.TestCase):
         self.assertEqual(config.coordinator.ensemble.n, 2)
         self.assertEqual(config.coordinator.ensemble.vote, "majority")
 
+    def test_ensemble_normalize_defaults_to_true(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+
+        self.assertTrue(config.coordinator.ensemble.normalize)
+        self.assertIsNone(config.coordinator.ensemble.judge_role)
+
+    def test_ensemble_normalize_can_be_disabled(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+                "coordinator": {"ensemble": {"normalize": False}},
+            }
+        )
+
+        self.assertFalse(config.coordinator.ensemble.normalize)
+
+    def test_judge_tiebreak_requires_judge_role(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [{"name": "planner", "model": "m"}],
+                    "coordinator": {"ensemble": {"vote": "judge_tiebreak"}},
+                }
+            )
+
+    def test_judge_tiebreak_accepted_with_explicit_judge_role(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [
+                    {"name": "planner", "model": "m"},
+                    {"name": "judge", "model": "m"},
+                ],
+                "coordinator": {"ensemble": {"vote": "judge_tiebreak", "judge_role": "judge"}},
+            }
+        )
+
+        self.assertEqual(config.coordinator.ensemble.judge_role, "judge")
+
+    def test_judge_tiebreak_accepted_with_verifier_role(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [
+                    {"name": "planner", "model": "m"},
+                    {"name": "verifier", "model": "m", "is_verifier": True},
+                ],
+                "coordinator": {"ensemble": {"vote": "judge_tiebreak"}},
+            }
+        )
+
+        self.assertEqual(config.coordinator.ensemble.vote, "judge_tiebreak")
+
+    def test_rejects_unknown_judge_role(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                {
+                    "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                    "roles": [{"name": "planner", "model": "m"}],
+                    "coordinator": {"ensemble": {"judge_role": "missing"}},
+                }
+            )
+
     def test_rejects_unknown_coordinator_pattern(self):
         with self.assertRaises(ConfigError):
             config_from_dict(

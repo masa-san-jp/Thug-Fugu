@@ -33,8 +33,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   analysis), and a `stage_results` placeholder for the future sequential-DAG
   work. `summary.json` gained a deterministic paired-bootstrap 95% CI
   (`paired`) between the first condition and every other condition.
+- New `src/fugu_local/answers.py` module: `normalize_answer` (Unicode NFKC,
+  Markdown/code-fence stripping, answer-prefix removal, whitespace/case
+  normalization, and number-format normalization for strings that are
+  entirely numeric), `extract_final_answer`, `cluster_answers`, and
+  `majority_vote`. Shared by ensemble voting and the evaluation harness's
+  graders instead of each maintaining its own copy.
+- Ensemble voting gains **normalized majority** voting (`coordinator.
+  ensemble.normalize`, default `true`): equivalent answers like `42`,
+  `**42**`, and `Answer: 42` now count as the same vote instead of splitting
+  votes and effectively returning whichever candidate happened to come first.
+  Set `normalize: false` to restore the previous exact-match voting.
+- New `coordinator.ensemble.vote: "judge_tiebreak"` mode: runs normalized
+  majority voting, and only when the winning cluster is tied with another
+  makes one additional call to a judge role (`coordinator.ensemble.judge_role`,
+  or a `roles[]` entry with `is_verifier: true`) to pick between the tied
+  candidates. Falls back to the normalized-majority tie-break if the judge
+  call fails or returns an unparseable choice. Judge calls receive a
+  deterministic per-role seed, contribute their token usage to the final run
+  total, and emit a content-free warning when fallback is required.
+- `OrchestrationResult.vote_summary` (cluster count, winning vote count,
+  whether normalization was applied, whether the judge was called) is now
+  recorded for `parallel_ensemble` runs and included in structured run logs.
 
 ### Changed
+- **Breaking**: `coordinator.ensemble.vote: "majority"` now normalizes
+  answers before counting votes by default (`coordinator.ensemble.normalize`
+  defaults to `true`). Previously, votes were counted by exact string match,
+  so answers differing only in Markdown formatting, whitespace, or an
+  "Answer:" prefix silently split their votes. Set
+  `coordinator.ensemble.normalize: false` to restore the exact-match
+  behavior used before this release.
 - `scripts/evaluate_orchestration.py` summary schema is now `schema_version:
   3`. Per-condition `accuracy` is the mean of *per-task* pass rates
   (`task_scores`), not the mean of every individual run — averaging over runs
@@ -44,6 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `by_domain` (task-level per-domain accuracy); `total_tokens` is renamed
   `tokens_total`. Manifests and results from `schema_version` 1/2 can still be
   rerun via `--rerun-manifest`.
+- `scripts/evaluate_orchestration.py`'s deterministic-answer normalization
+  (`grader.normalize: true`) now delegates Markdown/code-fence stripping and
+  whitespace/case/number normalization to `fugu_local.answers.normalize_answer`
+  instead of a separate local implementation; LaTeX-specific handling stays
+  local. `normalize: true` graders are now also slightly more lenient (e.g.
+  an `exact` grader now matches case-insensitively, matching `contains` and
+  `regex`'s existing case-insensitive behavior) since the shared
+  normalization casefolds.
 
 ## [0.1.0] - 2026-07-30
 

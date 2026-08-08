@@ -33,6 +33,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Deterministic merge fallback (no/failed synthesizer) | `stable` | `orchestrator.py` (`_deterministic_merge`) | `test_orchestrator.py` |
 | Selection policies `all` / `keyword` | `stable` | `orchestrator.py` (`_select_worker_roles`), `config.py` | `test_orchestrator.py` |
 | Adaptive coordinator `direct` / `role_split` / `parallel_ensemble` | `stable` | `coordinator.py`, `orchestrator.py` | `test_coordinator.py`, `test_orchestrator.py` |
+| Normalized-majority and judge-tiebreak ensemble voting (`answers.py`, `coordinator.ensemble.normalize`/`judge_role`, `vote: "judge_tiebreak"`, `vote_summary`) | `stable` | `answers.py`, `orchestrator.py` (`_vote_content`, `_judge_tiebreak`), `config.py` | `test_answers.py`, `test_orchestrator.py` (`EnsembleVoteTests`), `test_config.py` |
 | Verifier retry loop (bounded budget) | `stable` | `orchestrator.py` (`_run_verifier`) | `test_orchestrator.py` (`VerifierRetryTests`) |
 | Request deadline + partial-result fallback | `stable` | `orchestrator.py` (`_run_workers`, deadline) | `test_orchestrator.py` (`RequestDeadlineTests`) |
 | Structured non-sensitive per-run logging | `stable` | `orchestrator.py` (`_log_run`) | `test_orchestrator.py` (`ObservabilityTest`) |

@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
+from . import answers
 from .backends import (
     ChatMessage,
     ChatRequest,
@@ -77,6 +78,17 @@ class VerificationAttempt:
 
 
 @dataclass(frozen=True)
+class VoteSummary:
+    """Outcome of an ensemble vote (``parallel_ensemble`` with a non-synth vote,
+    or the majority-vote fallback when synthesis fails)."""
+
+    clusters: int
+    winning_votes: int
+    normalized: bool
+    judge_called: bool
+
+
+@dataclass(frozen=True)
 class OrchestrationResult:
     content: str
     selected_roles: List[str]
@@ -96,6 +108,7 @@ class OrchestrationResult:
     tool_calls: Optional[List[dict]] = None
     tool_results: List[ToolResult] = field(default_factory=list)
     finish_reason: Optional[str] = None
+    vote_summary: Optional[VoteSummary] = None
 
 
 @dataclass(frozen=True)
@@ -273,6 +286,7 @@ class FuguLocalOrchestrator:
             verification_warning,
             accounting_worker_results,
             synthesis_usage,
+            vote_summary,
         ) = outcome
 
         if not any(result.ok for result in worker_results):
@@ -302,6 +316,7 @@ class FuguLocalOrchestrator:
                 synthesis_usage,
             ),
             usage_is_estimate=False,
+            vote_summary=vote_summary,
         )
         self._log_run(result)
         return result
@@ -685,6 +700,7 @@ class FuguLocalOrchestrator:
             verification_warning,
             accounting_worker_results,
             synthesis_usage,
+            None,
         )
 
     def _run_direct(
@@ -721,6 +737,7 @@ class FuguLocalOrchestrator:
             None,
             None,
             worker_results,
+            None,
             None,
         )
 
@@ -765,6 +782,7 @@ class FuguLocalOrchestrator:
         synthesizer_role: Optional[str] = None
         synthesis_error: Optional[str] = None
         synthesis_usage: Optional[TokenUsage] = None
+        vote_summary: Optional[VoteSummary] = None
         ok_results = [result for result in worker_results if result.ok]
 
         if vote == "synth" and synthesizer and ok_results and not _deadline_passed(deadline):
@@ -779,10 +797,22 @@ class FuguLocalOrchestrator:
                     seed=derive_seed(seed, "synthesizer"),
                 )
             except Exception as exc:  # noqa: BLE001 - synthesis is optional fallback path.
-                content = _majority_vote(ok_results) or _deterministic_merge(worker_results)
+                content, vote_summary, vote_usage = self._vote_content(
+                    ok_results,
+                    vote="majority",
+                    deadline=deadline,
+                    seed=seed,
+                )
+                synthesis_usage = vote_usage
+                content = content or _deterministic_merge(worker_results)
                 synthesis_error = str(exc)
         elif ok_results:
-            content = _majority_vote(ok_results)
+            content, vote_summary, synthesis_usage = self._vote_content(
+                ok_results,
+                vote=vote,
+                deadline=deadline,
+                seed=seed,
+            )
         else:
             content = _deterministic_merge(worker_results)
 
@@ -797,6 +827,7 @@ class FuguLocalOrchestrator:
             None,
             worker_results,
             synthesis_usage,
+            vote_summary,
         )
 
     def _log_run(self, result: OrchestrationResult) -> None:
@@ -827,6 +858,16 @@ class FuguLocalOrchestrator:
             "verification_passed": result.verification_passed,
             "verification_warning": result.verification_warning,
             "usage": _usage_log_record(result.usage),
+            "vote_summary": (
+                {
+                    "clusters": result.vote_summary.clusters,
+                    "winning_votes": result.vote_summary.winning_votes,
+                    "normalized": result.vote_summary.normalized,
+                    "judge_called": result.vote_summary.judge_called,
+                }
+                if result.vote_summary is not None
+                else None
+            ),
             "workers": roles,
         }
         logger.info("orchestration run %s", result.run_id, extra={"fugu_run": record})
@@ -862,6 +903,16 @@ class FuguLocalOrchestrator:
         if not synthesizers:
             return None
         return synthesizers[0]
+
+    def _select_ensemble_judge(self) -> Optional[RoleConfig]:
+        judge_role_name = self.config.coordinator.ensemble.judge_role
+        if judge_role_name is not None:
+            for role in self.config.roles:
+                if role.name == judge_role_name:
+                    return role
+            return None
+        verifiers = [role for role in self.config.roles if role.is_verifier]
+        return verifiers[0] if verifiers else None
 
     def _select_worker_roles(self, roles: List[RoleConfig], user_text: str) -> List[RoleConfig]:
         if self.config.orchestrator.selection_policy == "all":
@@ -1034,6 +1085,141 @@ class FuguLocalOrchestrator:
                 error=str(exc),
                 latency_ms=round((time.perf_counter() - started) * 1000, 1),
             )
+
+    def _vote_content(
+        self,
+        results: List[WorkerResult],
+        *,
+        vote: str,
+        deadline: Optional[float] = None,
+        seed: Optional[int] = None,
+    ) -> tuple[str, VoteSummary, Optional[TokenUsage]]:
+        """Consolidate ensemble worker output by (normalized) majority vote.
+
+        ``vote="majority"`` always uses normalized (or, with
+        ``ensemble.normalize=false``, exact) majority voting. ``vote=
+        "judge_tiebreak"`` does the same, but when the winning cluster is tied
+        with another, asks the configured judge role to pick once before
+        falling back to the normalized-majority tie-break.
+        """
+
+        ensemble_config = self.config.coordinator.ensemble
+        contents = [result.content for result in results]
+        normalize = ensemble_config.normalize
+        clusters = answers.cluster_answers(contents) if normalize else _exact_clusters(contents)
+
+        if not clusters:
+            return (
+                "",
+                VoteSummary(clusters=0, winning_votes=0, normalized=normalize, judge_called=False),
+                None,
+            )
+
+        max_size = max(len(cluster) for cluster in clusters)
+        tied = [cluster for cluster in clusters if len(cluster) == max_size]
+
+        if vote == "judge_tiebreak" and len(tied) > 1 and not _deadline_passed(deadline):
+            chosen_index, judge_usage = self._judge_tiebreak(results, tied, seed=seed)
+            if chosen_index is not None:
+                winning_cluster = next(cluster for cluster in clusters if chosen_index in cluster)
+                return (
+                    contents[chosen_index],
+                    VoteSummary(
+                        clusters=len(clusters),
+                        winning_votes=len(winning_cluster),
+                        normalized=normalize,
+                        judge_called=True,
+                    ),
+                    judge_usage,
+                )
+            winner, votes = _majority_from_clusters(contents, clusters, normalize)
+            return (
+                winner,
+                VoteSummary(
+                    clusters=len(clusters),
+                    winning_votes=votes,
+                    normalized=normalize,
+                    judge_called=True,
+                ),
+                judge_usage,
+            )
+
+        winner, votes = _majority_from_clusters(contents, clusters, normalize)
+        return (
+            winner,
+            VoteSummary(
+                clusters=len(clusters),
+                winning_votes=votes,
+                normalized=normalize,
+                judge_called=False,
+            ),
+            None,
+        )
+
+    def _judge_tiebreak(
+        self,
+        results: List[WorkerResult],
+        tied_clusters: List[List[int]],
+        *,
+        seed: Optional[int] = None,
+    ) -> tuple[Optional[int], Optional[TokenUsage]]:
+        """Ask the ensemble judge role to pick among tied candidates.
+
+        Returns the chosen candidate's index into ``results`` and the judge
+        call's usage. The index is ``None`` if no judge is configured, the
+        judge call fails, or its response cannot be parsed as a valid choice
+        (the caller falls back to the normalized-majority tie-break). Usage is
+        preserved for a successful backend response even when parsing fails.
+        """
+
+        judge = self._select_ensemble_judge()
+        if judge is None:
+            logger.warning("ensemble judge is unavailable; falling back to majority tie-break")
+            return None, None
+        candidates = [cluster[0] for cluster in tied_clusters]
+        candidate_lines = [
+            f"[{position}] {results[index].content}" for position, index in enumerate(candidates)
+        ]
+        judge_messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    f"{judge.system_prompt}\n\n"
+                    "Multiple candidate answers tied in an ensemble vote. Choose the "
+                    'single best candidate. Return JSON only: {"choice": <index>}.'
+                ).strip(),
+            ),
+            ChatMessage(
+                role="user",
+                content="Tied candidates:\n" + "\n".join(candidate_lines),
+            ),
+        ]
+        router = self._router_for_role(judge)
+        request = ChatRequest(
+            model=router.model_string,
+            messages=judge_messages,
+            temperature=self._temperature(None),
+            max_tokens=self._max_tokens(None),
+            seed=derive_seed(seed, f"ensemble-judge:{judge.name}"),
+        )
+        try:
+            response = router.chat(request)
+        except Exception as exc:  # noqa: BLE001 - judge failure falls back to majority.
+            logger.warning(
+                "ensemble judge role %s failed; falling back to majority tie-break: %s",
+                judge.name,
+                exc,
+            )
+            return None, None
+        choice = _parse_judge_choice(response.content, len(candidates))
+        if choice is None:
+            logger.warning(
+                "ensemble judge role %s returned an invalid choice; "
+                "falling back to majority tie-break",
+                judge.name,
+            )
+            return None, response.usage
+        return candidates[choice], response.usage
 
     def _synthesize(
         self,
@@ -1277,6 +1463,18 @@ def _coerce_bool(value: object) -> Optional[bool]:
     return None
 
 
+def _parse_judge_choice(content: str, candidate_count: int) -> Optional[int]:
+    payload = _extract_json_object(content)
+    if payload is None:
+        return None
+    choice = payload.get("choice")
+    if not isinstance(choice, int) or isinstance(choice, bool):
+        return None
+    if not (0 <= choice < candidate_count):
+        return None
+    return choice
+
+
 def _format_verifier_retry_instruction(critique: str) -> str:
     return (
         "Verifier critique:\n"
@@ -1285,18 +1483,36 @@ def _format_verifier_retry_instruction(critique: str) -> str:
     )
 
 
-def _majority_vote(results: List[WorkerResult]) -> str:
-    counts: Dict[str, int] = {}
-    for result in results:
-        counts[result.content] = counts.get(result.content, 0) + 1
-    best = None
-    best_count = -1
-    for result in results:
-        count = counts[result.content]
-        if count > best_count:
-            best = result.content
-            best_count = count
-    return best or ""
+def _exact_clusters(contents: List[str]) -> List[List[int]]:
+    """Group indices of ``contents`` by exact string equality (no normalization).
+
+    Used for ``coordinator.ensemble.normalize=false`` to preserve the legacy
+    exact-match voting behavior. Cluster order matches first appearance, same
+    as ``answers.cluster_answers``.
+    """
+
+    buckets: Dict[str, List[int]] = {}
+    for index, content in enumerate(contents):
+        buckets.setdefault(content, []).append(index)
+    return list(buckets.values())
+
+
+def _majority_from_clusters(
+    contents: List[str], clusters: List[List[int]], normalize: bool
+) -> tuple[str, int]:
+    """Pick the winning content from precomputed clusters.
+
+    Ties break to the earliest-formed cluster (``max`` is stable), matching
+    ``answers.majority_vote``'s tie-break rule. When ``normalize`` is true this
+    delegates to ``answers.majority_vote`` directly instead of recomputing the
+    already-known winner by hand.
+    """
+
+    if normalize:
+        winner, votes, _ = answers.majority_vote(contents)
+        return winner, votes
+    best_cluster = max(clusters, key=len)
+    return contents[best_cluster[0]], len(best_cluster)
 
 
 def _latest_user_message_text(messages: Iterable[ChatMessage]) -> str:
