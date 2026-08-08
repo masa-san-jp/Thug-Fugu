@@ -13,9 +13,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
-from .backends import TokenUsage
+if TYPE_CHECKING:
+    # Deferred to avoid a runtime cycle: backends.py imports from config.py,
+    # and config.py imports STAGE_NAMES from this module for validation.
+    from .backends import TokenUsage
 
 STAGE_NAMES = (
     "planner",
