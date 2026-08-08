@@ -196,6 +196,27 @@ class ServerTests(unittest.TestCase):
             },
         )
 
+    def test_ignores_verify_config_override_in_request_body(self):
+        baseline_status, baseline_body = self._post_chat(
+            {"model": "fugu-local", "messages": [{"role": "user", "content": "hello"}]}
+        )
+        overridden_status, overridden_body = self._post_chat(
+            {
+                "model": "fugu-local",
+                "messages": [{"role": "user", "content": "hello"}],
+                "verify": {
+                    "checks": {"constraint": {"enabled": True, "regex": "this-cannot-match"}}
+                },
+            }
+        )
+
+        self.assertEqual(baseline_status, 200)
+        self.assertEqual(overridden_status, 200)
+        self.assertEqual(
+            overridden_body["choices"][0]["message"]["content"],
+            baseline_body["choices"][0]["message"]["content"],
+        )
+
     def test_health_reports_active_pool_state_without_credentials(self):
         endpoint = "http://user:secret@127.0.0.1:11434?token=secret"
         config = config_from_dict(

@@ -915,3 +915,91 @@ class ToolCallingExecutionConfigTests(unittest.TestCase):
                     }
                 )
             )
+
+
+class VerifyChecksConfigTests(unittest.TestCase):
+    def _base(self, verify):
+        return {
+            "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+            "roles": [{"name": "planner", "model": "m"}],
+            "verify": verify,
+        }
+
+    def test_verify_checks_default_to_disabled(self):
+        config = config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+
+        self.assertFalse(config.verify.checks.constraint.enabled)
+        self.assertFalse(config.verify.checks.citation.enabled)
+
+    def test_accepts_full_constraint_and_citation_checks(self):
+        config = config_from_dict(
+            self._base(
+                {
+                    "checks": {
+                        "constraint": {
+                            "enabled": True,
+                            "regex": "^ok",
+                            "min_length": 2,
+                            "max_length": 100,
+                            "numeric_range": [0, 10],
+                            "require_json": True,
+                        },
+                        "citation": {"enabled": True},
+                    }
+                }
+            )
+        )
+
+        constraint = config.verify.checks.constraint
+        self.assertTrue(constraint.enabled)
+        self.assertEqual(constraint.regex, "^ok")
+        self.assertEqual(constraint.min_length, 2)
+        self.assertEqual(constraint.max_length, 100)
+        self.assertEqual(constraint.numeric_range, [0.0, 10.0])
+        self.assertTrue(constraint.require_json)
+        self.assertTrue(config.verify.checks.citation.enabled)
+
+    def test_rejects_invalid_regex(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base({"checks": {"constraint": {"enabled": True, "regex": "("}}})
+            )
+
+    def test_rejects_min_length_greater_than_max_length(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base(
+                    {
+                        "checks": {
+                            "constraint": {
+                                "enabled": True,
+                                "min_length": 10,
+                                "max_length": 5,
+                            }
+                        }
+                    }
+                )
+            )
+
+    def test_rejects_inverted_numeric_range(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base({"checks": {"constraint": {"enabled": True, "numeric_range": [10, 0]}}})
+            )
+
+    def test_rejects_negative_min_length(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base({"checks": {"constraint": {"enabled": True, "min_length": -1}}})
+            )
+
+    def test_rejects_malformed_numeric_range(self):
+        with self.assertRaises(ConfigError):
+            config_from_dict(
+                self._base({"checks": {"constraint": {"enabled": True, "numeric_range": [1]}}})
+            )

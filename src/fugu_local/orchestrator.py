@@ -892,6 +892,7 @@ class FuguLocalOrchestrator:
             base_seed=seed,
             deadline=deadline,
             max_stage_tokens=dag_config.max_stage_tokens,
+            verify_checks=self.config.verify.checks,
         )
 
         worker_results = [
