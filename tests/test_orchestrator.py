@@ -1,7 +1,8 @@
 import unittest
+from pathlib import Path
 
 from fugu_local.backends import ChatMessage, ChatResponse, ChatStreamChunk, TokenUsage
-from fugu_local.config import config_from_dict
+from fugu_local.config import config_from_dict, load_config
 from fugu_local.orchestrator import FuguLocalOrchestrator, OrchestrationError, derive_seed
 
 
@@ -1525,3 +1526,139 @@ class EnsembleVoteTests(unittest.TestCase):
         # tied cluster (member #1's answer) wins.
         self.assertEqual(result.content, "43")
         self.assertTrue(any("failed" in message for message in captured.output))
+
+
+def make_sequential_dag_config(stages=None, request_timeout_seconds=None, tool_calling=None):
+    orchestrator = {"selection_policy": "all"}
+    if request_timeout_seconds is not None:
+        orchestrator["request_timeout_seconds"] = request_timeout_seconds
+    raw = {
+        "models": [
+            {"name": "planner-model", "backend": "echo", "model": "mock-planner"},
+            {"name": "solver-model", "backend": "echo", "model": "mock-solver"},
+            {"name": "judge-model", "backend": "echo", "model": "mock-judge"},
+            {"name": "critic-model", "backend": "echo", "model": "mock-critic"},
+            {"name": "synth-model", "backend": "echo", "model": "mock-synth"},
+        ],
+        "roles": [
+            {"name": "planner", "model": "planner-model"},
+            {"name": "solver", "model": "solver-model"},
+            {"name": "judge", "model": "judge-model", "is_verifier": True},
+            {"name": "critic", "model": "critic-model"},
+            {"name": "synthesizer", "model": "synth-model", "is_synthesizer": True},
+        ],
+        "orchestrator": orchestrator,
+        "coordinator": {
+            "enabled": True,
+            "default_pattern": "sequential_dag",
+            # Force sequential_dag regardless of message length/keywords, so
+            # tests aren't sensitive to the coordinator's built-in heuristics
+            # (e.g. "short text -> direct").
+            "rules": [{"match": ["USE_DAG"], "pattern": "sequential_dag"}],
+            "dag": {
+                "stages": stages
+                if stages is not None
+                else [
+                    {"name": "planner", "role": "planner"},
+                    {"name": "solver", "role": "solver", "fanout": 2},
+                    {"name": "verifier", "role": "judge"},
+                    {"name": "critic", "role": "critic"},
+                    {"name": "reviser", "role": "solver"},
+                    {"name": "claim_judge", "role": "judge"},
+                    {"name": "writer", "role": "synthesizer"},
+                ]
+            },
+        },
+    }
+    if tool_calling is not None:
+        raw["tool_calling"] = tool_calling
+    return config_from_dict(raw)
+
+
+def make_sequential_dag_backends():
+    return {
+        "planner-model": StaticBackend('{"answer": "plan", "subproblems": ["sp1", "sp2"]}'),
+        "solver-model": StaticBackend('{"answer": "solved"}'),
+        "judge-model": StaticBackend('{"claims": []}'),
+        "critic-model": StaticBackend('{"claims": []}'),
+        "synth-model": StaticBackend('{"answer": "final answer"}'),
+    }
+
+
+class SequentialDagTests(unittest.TestCase):
+    def test_example_config_selects_dag_for_documented_prompt(self):
+        config_path = (
+            Path(__file__).resolve().parents[1] / "examples" / "fugu-local.sequential-dag.json"
+        )
+        orchestrator = FuguLocalOrchestrator(load_config(config_path))
+
+        result = orchestrator.chat(
+            [ChatMessage(role="user", content="run the dag: explain the trade-offs")]
+        )
+
+        self.assertEqual(result.pattern, "sequential_dag")
+        self.assertEqual(len(result.stage_results), 8)
+
+    def test_end_to_end_run_produces_content_and_stage_results(self):
+        config = make_sequential_dag_config()
+        orchestrator = FuguLocalOrchestrator(
+            config, backend_overrides=make_sequential_dag_backends()
+        )
+
+        result = orchestrator.chat([ChatMessage(role="user", content="USE_DAG do the task")])
+
+        self.assertEqual(result.pattern, "sequential_dag")
+        self.assertEqual(result.content, "final answer")
+        # planner + 2x solver (fanout) + verifier + critic + reviser +
+        # claim_judge + writer = 8 stage calls.
+        self.assertEqual(len(result.stage_results), 8)
+        self.assertEqual(result.warnings, [])
+        self.assertIsNone(result.synthesizer_role)
+
+    def test_seed_is_propagated_to_dag_stages(self):
+        config = make_sequential_dag_config()
+        backends = make_sequential_dag_backends()
+        orchestrator = FuguLocalOrchestrator(config, backend_overrides=backends)
+
+        orchestrator.chat([ChatMessage(role="user", content="USE_DAG task")], seed=42)
+
+        self.assertIsNotNone(backends["planner-model"].calls[-1].seed)
+
+    def test_prepare_streaming_response_returns_none_for_sequential_dag(self):
+        config = make_sequential_dag_config()
+        orchestrator = FuguLocalOrchestrator(
+            config, backend_overrides=make_sequential_dag_backends()
+        )
+
+        prepared = orchestrator.prepare_streaming_response(
+            [ChatMessage(role="user", content="USE_DAG task")]
+        )
+
+        self.assertIsNone(prepared)
+
+    def test_deadline_exceeded_returns_partial_result_with_warning(self):
+        config = make_sequential_dag_config(request_timeout_seconds=0.05)
+        backends = make_sequential_dag_backends()
+        backends["planner-model"] = SleepBackend('{"answer": "plan", "subproblems": ["x"]}', 0.2)
+        orchestrator = FuguLocalOrchestrator(config, backend_overrides=backends)
+
+        result = orchestrator.chat([ChatMessage(role="user", content="USE_DAG task")])
+
+        self.assertTrue(any("deadline" in warning for warning in result.warnings))
+
+    def test_empty_dag_stages_raises(self):
+        config = make_sequential_dag_config(stages=[])
+        orchestrator = FuguLocalOrchestrator(
+            config, backend_overrides=make_sequential_dag_backends()
+        )
+
+        with self.assertRaises(OrchestrationError):
+            orchestrator.chat([ChatMessage(role="user", content="USE_DAG task")])
+
+    def test_all_stage_calls_failing_raises_orchestration_error(self):
+        config = make_sequential_dag_config()
+        backends = {name: FailingBackend() for name in make_sequential_dag_backends()}
+        orchestrator = FuguLocalOrchestrator(config, backend_overrides=backends)
+
+        with self.assertRaises(OrchestrationError):
+            orchestrator.chat([ChatMessage(role="user", content="USE_DAG task")])

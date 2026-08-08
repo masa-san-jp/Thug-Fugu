@@ -65,6 +65,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gold-answer correctness before use; this validator checks schema and
   self-consistency only, never answer correctness, and never touches
   `review_status`. See `docs/operations/benchmark-v2.md`.
+- New `coordinator.default_pattern`/`rules[].pattern` value `sequential_dag`:
+  a fixed 7-stage inference DAG (`planner` → `solver` → `verifier` →
+  `critic` → `reviser` → `claim_judge` → `writer`, `src/fugu_local/
+  stages.py`) where each stage's prompt is built from the accumulated,
+  structured output of every prior completed stage instead of all roles
+  receiving the same input (`src/fugu_local/pipeline.py`,
+  `orchestrator.py::_run_sequential_dag`). Stage responses are parsed
+  leniently (`stages.parse_stage_output`); parse failures degrade to the raw
+  text instead of raising. Configured via `coordinator.dag.stages[]`
+  (`name`, `role`, `enabled`, `fanout`) and `coordinator.dag.
+  max_stage_tokens`; `solver` and `writer` cannot be disabled, `fanout` is
+  only valid on `solver`, and disabling `critic` also skips `reviser` (its
+  input contract requires a critique). Disabling any other stage applies a
+  documented per-stage bypass rule rather than passing input straight
+  through. Not combinable with `tool_calling.enabled` and not eligible for
+  true token streaming (falls back to buffered SSE). `OrchestrationResult`
+  gains `stage_results` (every stage call, in order) and `warnings`
+  (e.g. deadline exceeded mid-DAG). See
+  `docs/design/sequential-inference-dag.md` and
+  `examples/fugu-local.sequential-dag.json`.
 
 ### Changed
 - **Breaking**: `coordinator.ensemble.vote: "majority"` now normalizes
