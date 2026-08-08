@@ -85,6 +85,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. deadline exceeded mid-DAG). See
   `docs/design/sequential-inference-dag.md` and
   `examples/fugu-local.sequential-dag.json`.
+- New top-level `verify.checks` config backs the `sequential_dag` verifier
+  stage's LLM self-report with in-process mechanical checks
+  (`src/fugu_local/verifiers.py`): `verify.checks.constraint` (regex,
+  `min_length`/`max_length`, `numeric_range`, `require_json`) and
+  `verify.checks.citation` (does a claim's evidence text appear verbatim in
+  the DAG's accumulated context). Both are disabled by default and are
+  individually no-ops when disabled; when a check is enabled and fails, it
+  overrides the LLM's own `passed`/`unavailable` verdict for that claim.
+  Neither check runs a subprocess, opens a network connection, or writes to
+  disk; a subprocess-based code-execution verifier was evaluated and
+  rejected as unsafe to implement without an external, human-gated sandbox
+  (see `docs/operations/security-profile.md`).
 
 ### Changed
 - **Breaking**: `coordinator.ensemble.vote: "majority"` now normalizes

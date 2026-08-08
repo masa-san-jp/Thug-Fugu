@@ -108,6 +108,39 @@ class VerifyConfig:
 
 
 @dataclass(frozen=True)
+class ConstraintCheckConfig:
+    """In-process constraint check applied to a DAG claim's text. No
+    subprocess, no network, no file I/O -- see WP-5 in
+    docs/plans/phase2-decision-implementation-plan.md."""
+
+    enabled: bool = False
+    regex: Optional[str] = None
+    min_length: Optional[int] = None
+    max_length: Optional[int] = None
+    numeric_range: Optional[List[float]] = None
+    require_json: bool = False
+
+
+@dataclass(frozen=True)
+class CitationCheckConfig:
+    """Checks that a claim's evidence text appears verbatim in the context
+    already available to the DAG (no external URL fetch)."""
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
+class ChecksConfig:
+    constraint: ConstraintCheckConfig = field(default_factory=ConstraintCheckConfig)
+    citation: CitationCheckConfig = field(default_factory=CitationCheckConfig)
+
+
+@dataclass(frozen=True)
+class VerifyChecksConfig:
+    checks: ChecksConfig = field(default_factory=ChecksConfig)
+
+
+@dataclass(frozen=True)
 class DagStageConfig:
     name: str
     role: str
@@ -163,6 +196,7 @@ class FuguLocalConfig:
     tool_calling: ToolCallingConfig = field(default_factory=ToolCallingConfig)
     model_pools: List[ModelPoolConfig] = field(default_factory=list)
     server: ServerConfig = field(default_factory=ServerConfig)
+    verify: VerifyChecksConfig = field(default_factory=VerifyChecksConfig)
 
     def model_by_name(self) -> Dict[str, ModelConfig]:
         return {model.name: model for model in self.models}
@@ -199,6 +233,7 @@ def config_from_dict(raw: Mapping[str, Any]) -> FuguLocalConfig:
     tool_calling = _tool_calling_from_dict(raw.get("tool_calling", {}))
     model_pools = [_model_pool_from_dict(item) for item in _optional_list(raw, "model_pools")]
     server = _server_from_dict(raw.get("server", {}))
+    verify = _verify_checks_from_dict(raw.get("verify", {}))
     config = FuguLocalConfig(
         models=models,
         roles=roles,
@@ -207,6 +242,7 @@ def config_from_dict(raw: Mapping[str, Any]) -> FuguLocalConfig:
         tool_calling=tool_calling,
         model_pools=model_pools,
         server=server,
+        verify=verify,
     )
     validate_config(config)
     return config
@@ -263,6 +299,7 @@ def validate_config(config: FuguLocalConfig) -> None:
     _validate_coordinator(config, model_names)
     _validate_tool_calling(config.tool_calling)
     _validate_server(config.server)
+    _validate_verify_checks(config.verify)
 
 
 def _model_from_dict(raw: Any) -> ModelConfig:
@@ -387,6 +424,87 @@ def _dag_stage_from_dict(raw: Any) -> DagStageConfig:
         enabled=_optional_bool(obj, "enabled", default=True),
         fanout=fanout if fanout is not None else 1,
     )
+
+
+def _verify_checks_from_dict(raw: Any) -> VerifyChecksConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "verify")
+    return VerifyChecksConfig(checks=_checks_from_dict(obj.get("checks", {})))
+
+
+def _checks_from_dict(raw: Any) -> ChecksConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "verify.checks")
+    return ChecksConfig(
+        constraint=_constraint_check_from_dict(obj.get("constraint", {})),
+        citation=_citation_check_from_dict(obj.get("citation", {})),
+    )
+
+
+def _constraint_check_from_dict(raw: Any) -> ConstraintCheckConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "verify.checks.constraint")
+    numeric_range_raw = obj.get("numeric_range")
+    numeric_range: Optional[List[float]] = None
+    if numeric_range_raw is not None:
+        if (
+            not isinstance(numeric_range_raw, list)
+            or len(numeric_range_raw) != 2
+            or any(
+                isinstance(item, bool) or not isinstance(item, (int, float))
+                for item in numeric_range_raw
+            )
+        ):
+            raise ConfigError(
+                "verify.checks.constraint.numeric_range must be a [min, max] list of two numbers"
+            )
+        numeric_range = [float(numeric_range_raw[0]), float(numeric_range_raw[1])]
+    return ConstraintCheckConfig(
+        enabled=_optional_bool(obj, "enabled", default=False),
+        regex=_optional_str(obj, "regex"),
+        min_length=_optional_int(obj, "min_length", default=None),
+        max_length=_optional_int(obj, "max_length", default=None),
+        numeric_range=numeric_range,
+        require_json=_optional_bool(obj, "require_json", default=False),
+    )
+
+
+def _citation_check_from_dict(raw: Any) -> CitationCheckConfig:
+    if raw is None:
+        raw = {}
+    obj = _required_object(raw, "verify.checks.citation")
+    return CitationCheckConfig(enabled=_optional_bool(obj, "enabled", default=False))
+
+
+def _validate_verify_checks(config: VerifyChecksConfig) -> None:
+    constraint = config.checks.constraint
+    if constraint.min_length is not None and constraint.min_length < 0:
+        raise ConfigError("verify.checks.constraint.min_length must be non-negative")
+    if constraint.max_length is not None and constraint.max_length < 0:
+        raise ConfigError("verify.checks.constraint.max_length must be non-negative")
+    if (
+        constraint.min_length is not None
+        and constraint.max_length is not None
+        and constraint.min_length > constraint.max_length
+    ):
+        raise ConfigError("verify.checks.constraint.min_length must not exceed max_length")
+    if (
+        constraint.numeric_range is not None
+        and constraint.numeric_range[0] > constraint.numeric_range[1]
+    ):
+        raise ConfigError(
+            "verify.checks.constraint.numeric_range[0] must not exceed numeric_range[1]"
+        )
+    if constraint.regex is not None:
+        try:
+            re.compile(constraint.regex)
+        except re.error as exc:
+            raise ConfigError(
+                f"verify.checks.constraint.regex is not a valid regular expression: {exc}"
+            ) from exc
 
 
 def _validate_coordinator(config: FuguLocalConfig, model_names: set) -> None:
