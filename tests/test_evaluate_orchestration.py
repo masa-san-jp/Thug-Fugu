@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -29,9 +30,18 @@ class FakeOrchestrator:
     def __init__(self, config):
         self.config = config
         self.calls = []
+        self.budget_calls = []
 
-    def chat(self, messages, temperature=None, seed=None):
+    def chat(
+        self,
+        messages,
+        temperature=None,
+        seed=None,
+        max_tokens=None,
+        request_timeout_seconds=None,
+    ):
         self.calls.append(seed)
+        self.budget_calls.append((max_tokens, request_timeout_seconds))
         prompt = messages[-1].content
         if "2 + 3" in prompt:
             content = "5"
@@ -459,7 +469,14 @@ class EvaluateOrchestrationTests(unittest.TestCase):
             def __init__(self, config):
                 self.config = config
 
-            def chat(self, messages, temperature=None, seed=None):
+            def chat(
+                self,
+                messages,
+                temperature=None,
+                seed=None,
+                max_tokens=None,
+                request_timeout_seconds=None,
+            ):
                 result = type("Result", (), {})()
                 result.content = "final"
                 result.pattern = "role_split"
@@ -563,6 +580,241 @@ class EvaluateOrchestrationTests(unittest.TestCase):
                 config = load_config(str(path))
                 self.assertTrue(config.models)
                 self.assertTrue(config.roles)
+
+
+class BudgetManifestHarnessTests(unittest.TestCase):
+    def _config(self):
+        return config_from_dict(
+            {
+                "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                "roles": [{"name": "solver", "model": "m"}],
+            }
+        )
+
+    def _case(self):
+        return eval_script.EvalCase(
+            case_id="c1", prompt="2 + 3", grader={"type": "exact", "value": "5"}
+        )
+
+    def _condition(self):
+        return eval_script.Condition(label="A", config_path=Path("unused.json"))
+
+    def test_budget_manifest_allocates_max_tokens_before_execution(self):
+        orchestrator = FakeOrchestrator(self._config())
+
+        eval_script._run_case(
+            self._condition(),
+            orchestrator,
+            self._case(),
+            seed=0,
+            repeat_index=0,
+            repeat_seed=0,
+            token_budget=128,
+            wall_clock_budget_ms=5000,
+        )
+
+        self.assertEqual(orchestrator.budget_calls, [(128, 5.0)])
+
+    def test_no_budget_leaves_max_tokens_and_timeout_unset(self):
+        orchestrator = FakeOrchestrator(self._config())
+
+        eval_script._run_case(
+            self._condition(), orchestrator, self._case(), seed=0, repeat_index=0, repeat_seed=0
+        )
+
+        self.assertEqual(orchestrator.budget_calls, [(None, None)])
+
+    def test_budget_wall_clock_is_enforced_via_deadline(self):
+        class SlowFakeOrchestrator(FakeOrchestrator):
+            def chat(
+                self,
+                messages,
+                temperature=None,
+                seed=None,
+                max_tokens=None,
+                request_timeout_seconds=None,
+            ):
+                time.sleep(0.02)
+                return super().chat(
+                    messages,
+                    temperature=temperature,
+                    seed=seed,
+                    max_tokens=max_tokens,
+                    request_timeout_seconds=request_timeout_seconds,
+                )
+
+        orchestrator = SlowFakeOrchestrator(self._config())
+
+        row = eval_script._run_case(
+            self._condition(),
+            orchestrator,
+            self._case(),
+            seed=0,
+            repeat_index=0,
+            repeat_seed=0,
+            wall_clock_budget_ms=1.0,
+        )
+
+        self.assertTrue(row["budget_exceeded"])
+        self.assertFalse(row["passed"])
+
+    def test_budget_exceeded_runs_count_as_incorrect(self):
+        # FakeOrchestrator reports usage total_tokens=5 (FakeUsage(2, 3, 5))
+        # and content "5", which the grader would otherwise mark correct.
+        orchestrator = FakeOrchestrator(self._config())
+
+        row = eval_script._run_case(
+            self._condition(),
+            orchestrator,
+            self._case(),
+            seed=0,
+            repeat_index=0,
+            repeat_seed=0,
+            token_budget=1,
+        )
+
+        self.assertTrue(row["budget_exceeded"])
+        self.assertFalse(row["passed"])
+
+    def test_within_budget_run_keeps_graded_result(self):
+        orchestrator = FakeOrchestrator(self._config())
+
+        row = eval_script._run_case(
+            self._condition(),
+            orchestrator,
+            self._case(),
+            seed=0,
+            repeat_index=0,
+            repeat_seed=0,
+            token_budget=1000,
+            wall_clock_budget_ms=60000,
+        )
+
+        self.assertFalse(row["budget_exceeded"])
+        self.assertTrue(row["passed"])
+
+    def test_summary_includes_budget_filtered_view(self):
+        rows = [
+            {
+                "condition": "A",
+                "case_id": "t1",
+                "domain": "math",
+                "seed": 0,
+                "passed": True,
+                "wall_ms": 10.0,
+                "usage": None,
+                "error": "",
+                "budget_exceeded": False,
+            },
+            {
+                "condition": "A",
+                "case_id": "t2",
+                "domain": "math",
+                "seed": 0,
+                "passed": False,
+                "wall_ms": 10.0,
+                "usage": None,
+                "error": "",
+                "budget_exceeded": True,
+            },
+        ]
+
+        summary = eval_script._summarize(rows)
+
+        self.assertIn("budget_filtered", summary)
+        self.assertEqual(summary["budget_filtered"]["A"]["unique_cases"], 1)
+        self.assertEqual(summary["conditions"]["A"]["unique_cases"], 2)
+        self.assertEqual(summary["budget_filtered"]["A"]["accuracy"], 1.0)
+        self.assertEqual(summary["conditions"]["A"]["accuracy"], 0.5)
+
+    def test_summary_omits_budget_filtered_view_when_budget_not_used(self):
+        rows = [
+            {
+                "condition": "A",
+                "case_id": "t1",
+                "domain": "math",
+                "seed": 0,
+                "passed": True,
+                "wall_ms": 10.0,
+                "usage": None,
+                "error": "",
+            },
+        ]
+
+        summary = eval_script._summarize(rows)
+
+        self.assertNotIn("budget_filtered", summary)
+
+    def test_load_budget_manifest_returns_by_family_mapping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "budget-manifest.json"
+            manifest_path.write_text(
+                json.dumps({"by_family": {"math": {"token_budget": 100}}}), encoding="utf-8"
+            )
+
+            by_family = eval_script._load_budget_manifest(manifest_path)
+
+        self.assertEqual(by_family, {"math": {"token_budget": 100}})
+
+    def test_main_applies_budget_manifest_per_case_family(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cases_path = tmp_path / "cases.jsonl"
+            cases_path.write_text(
+                json.dumps(
+                    {
+                        "id": "c1",
+                        "prompt": "2 + 3",
+                        "domain": "math",
+                        "grader": {"type": "exact", "value": "5"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            config_path = tmp_path / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "models": [{"name": "m", "backend": "echo", "model": "mock"}],
+                        "roles": [{"name": "solver", "model": "m"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest_path = tmp_path / "budget-manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {"by_family": {"math": {"token_budget": 1, "wall_clock_budget_ms": 60000}}}
+                ),
+                encoding="utf-8",
+            )
+            output_dir = tmp_path / "out"
+
+            with mock.patch.object(eval_script, "FuguLocalOrchestrator", FakeOrchestrator):
+                code = eval_script.main(
+                    [
+                        "--cases",
+                        str(cases_path),
+                        "--condition",
+                        f"A={config_path}",
+                        "--budget-manifest",
+                        str(manifest_path),
+                        "--output-dir",
+                        str(output_dir),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            rows = [
+                json.loads(line)
+                for line in (output_dir / "results.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["budget_exceeded"])
+        self.assertFalse(rows[0]["passed"])
 
 
 if __name__ == "__main__":

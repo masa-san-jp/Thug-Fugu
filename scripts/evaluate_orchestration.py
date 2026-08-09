@@ -90,6 +90,16 @@ def main(argv: Optional[list] = None) -> int:
         help="Optional JSON object describing hardware, power meter, or node layout",
     )
     parser.add_argument(
+        "--budget-manifest",
+        help=(
+            "Path to a frozen budget-manifest.json (scripts/make_budget_manifest.py). "
+            "When set, each case's family-specific token_budget/wall_clock_budget_ms is "
+            "pre-allocated to max_tokens/request_timeout_seconds before the call; a run "
+            "whose actual usage still exceeds its budget is recorded with "
+            "budget_exceeded=true and counted as incorrect (WP-7 budget-matched harness)."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         help="Experiment bundle directory (manifest, snapshots, JSONL, CSV, summary)",
     )
@@ -144,6 +154,9 @@ def main(argv: Optional[list] = None) -> int:
     repeats = int(run_spec["repeats"])
     temperature = run_spec["temperature"]
     cases = list(_load_cases(cases_path))
+    budget_by_family = (
+        _load_budget_manifest(Path(args.budget_manifest)) if args.budget_manifest else {}
+    )
 
     bundle = None
     if output_dir is not None:
@@ -167,6 +180,7 @@ def main(argv: Optional[list] = None) -> int:
             for repeat_index in range(repeats):
                 repeat_seed = derive_seed(seed, f"repeat#{repeat_index}")
                 for case in cases:
+                    family_budget = budget_by_family.get(case.domain, {})
                     rows.append(
                         _run_case(
                             condition,
@@ -176,6 +190,8 @@ def main(argv: Optional[list] = None) -> int:
                             repeat_index=repeat_index,
                             repeat_seed=repeat_seed,
                             temperature=temperature,
+                            token_budget=family_budget.get("token_budget"),
+                            wall_clock_budget_ms=family_budget.get("wall_clock_budget_ms"),
                         )
                     )
 
@@ -269,6 +285,8 @@ def _run_case(
     repeat_index: int = 0,
     repeat_seed: Optional[int] = None,
     temperature: Optional[float] = None,
+    token_budget: Optional[int] = None,
+    wall_clock_budget_ms: Optional[float] = None,
 ) -> dict:
     random.seed(f"{seed}:{repeat_index}:{condition.label}:{case.case_id}")
     started = time.perf_counter()
@@ -285,6 +303,10 @@ def _run_case(
             [ChatMessage(role="user", content=case.prompt)],
             temperature=temperature,
             seed=repeat_seed,
+            max_tokens=token_budget,
+            request_timeout_seconds=(
+                wall_clock_budget_ms / 1000.0 if wall_clock_budget_ms is not None else None
+            ),
         )
         content = result.content
         passed = _grade(content, case.grader)
@@ -297,6 +319,25 @@ def _run_case(
         error = str(exc)
     wall_ms = round((time.perf_counter() - started) * 1000, 1)
     seed_sent = repeat_seed is not None and _condition_uses_real_backend(orchestrator.config)
+
+    # Budget is pre-allocated (max_tokens/request_timeout_seconds above), not
+    # just a post-hoc penalty -- but prompt tokens are only known after the
+    # call, and the deadline is only checked between orchestration steps, so
+    # actual usage can still exceed the budget. When it does, the run counts
+    # as incorrect regardless of what the grader said (plan section 8.4):
+    # "budget-matched" means only answers actually returned within budget
+    # count as correct.
+    budget_exceeded: Optional[bool] = None
+    if token_budget is not None or wall_clock_budget_ms is not None:
+        budget_exceeded = False
+        if token_budget is not None and usage and usage.get("total_tokens") is not None:
+            if usage["total_tokens"] > token_budget:
+                budget_exceeded = True
+        if wall_clock_budget_ms is not None and wall_ms > wall_clock_budget_ms:
+            budget_exceeded = True
+        if budget_exceeded:
+            passed = False
+
     return {
         "condition": condition.label,
         "config": str(condition.config_path),
@@ -317,6 +358,9 @@ def _run_case(
         "error": error,
         "content": content,
         "content_preview": content[:240].replace("\n", "\\n"),
+        "token_budget": token_budget,
+        "wall_clock_budget_ms": wall_clock_budget_ms,
+        "budget_exceeded": budget_exceeded,
     }
 
 
@@ -636,6 +680,19 @@ def _sanitize_config(value: Any, key: str = "") -> tuple[Any, bool]:
     return value, False
 
 
+def _load_budget_manifest(path: Path) -> dict:
+    """Load a frozen budget-manifest.json (scripts/make_budget_manifest.py)
+    and return its ``by_family`` mapping. Never regenerate a manifest from
+    the run it's controlling -- load a manifest that was committed ahead of
+    time (plan section 8.4)."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    by_family = payload.get("by_family")
+    if not isinstance(by_family, dict):
+        raise ValueError(f"{path}: budget manifest is missing a 'by_family' object")
+    return by_family
+
+
 def _safe_endpoint(value: Optional[str]) -> Optional[str]:
     if not value:
         return value
@@ -766,7 +823,7 @@ def _summarize(rows: list[dict], *, repeats: int = 1) -> dict:
                 )
             )
 
-    return {
+    summary = {
         "schema_version": SCHEMA_VERSION,
         "sample_unit": "unique_task",
         "n_tasks": len({row["case_id"] for row in rows}),
@@ -774,6 +831,26 @@ def _summarize(rows: list[dict], *, repeats: int = 1) -> dict:
         "conditions": conditions_summary,
         "paired": paired,
     }
+
+    # Auxiliary view for budget-matched runs (WP-7, plan section 8.4):
+    # `conditions` above already counts a budget_exceeded run as incorrect
+    # ("what got returned within budget"); `budget_filtered` instead drops
+    # those runs entirely, showing accuracy only among runs that actually
+    # completed within their pre-allocated budget. Present only when budget
+    # tracking was actually used (some row carries a non-None
+    # budget_exceeded), so a plain non-budget-matched run's summary.json
+    # doesn't grow a redundant, always-identical extra section.
+    if any(row.get("budget_exceeded") is not None for row in rows):
+        within_budget_rows = [row for row in rows if row.get("budget_exceeded") is not True]
+        by_condition_filtered: dict[str, list[dict]] = {}
+        for row in within_budget_rows:
+            by_condition_filtered.setdefault(row["condition"], []).append(row)
+        summary["budget_filtered"] = {
+            label: _condition_summary(condition_rows)
+            for label, condition_rows in by_condition_filtered.items()
+        }
+
+    return summary
 
 
 def _condition_summary(rows: list[dict]) -> dict:

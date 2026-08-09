@@ -1,0 +1,34 @@
+{
+  "models": [
+    {"name": "planner-model", "backend": "ollama", "model": "gemma4:e4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600},
+    {"name": "solver-model", "backend": "ollama", "model": "gpt-oss:20b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600},
+    {"name": "judge-model", "backend": "ollama", "model": "qwen2.5:0.5b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600},
+    {"name": "critic-model", "backend": "ollama", "model": "gemma4:e4b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600},
+    {"name": "synth-model", "backend": "ollama", "model": "gemma4:26b", "base_url": "http://127.0.0.1:11434", "timeout_seconds": 600}
+  ],
+  "roles": [
+    {"name": "planner", "model": "planner-model"},
+    {"name": "solver", "model": "solver-model"},
+    {"name": "judge", "model": "judge-model", "is_verifier": true},
+    {"name": "critic", "model": "critic-model"},
+    {"name": "synthesizer", "model": "synth-model", "is_synthesizer": true}
+  ],
+  "coordinator": {
+    "enabled": true,
+    "default_pattern": "sequential_dag",
+    "rules": [{"match": ["EVAL:"], "pattern": "sequential_dag"}],
+    "dag": {
+      "stages": [
+        {"name": "planner", "role": "planner"},
+        {"name": "solver", "role": "solver", "fanout": 2},
+        {"name": "verifier", "role": "judge"},
+        {"name": "critic", "role": "critic"},
+        {"name": "reviser", "role": "solver"},
+        {"name": "claim_judge", "role": "judge"},
+        {"name": "writer", "role": "synthesizer"}
+      ],
+      "max_stage_tokens": 1024
+    }
+  },
+  "orchestrator": {"selection_policy": "all", "temperature": 0.2}
+}

@@ -1,0 +1,14 @@
+{
+  "models": [
+    {"name": "cloud", "backend": "openai-compatible", "model": "REPLACE_WITH_MODEL", "base_url": "http://127.0.0.1:8000", "api_key": "${CLOUD_API_KEY}", "timeout_seconds": 600}
+  ],
+  "roles": [
+    {"name": "solver", "model": "cloud", "always_include": true}
+  ],
+  "coordinator": {
+    "enabled": true,
+    "default_pattern": "direct",
+    "rules": [{"match": ["EVAL:"], "pattern": "direct"}]
+  },
+  "orchestrator": {"selection_policy": "all", "temperature": 0.2}
+}
