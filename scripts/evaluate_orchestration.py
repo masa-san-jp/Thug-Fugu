@@ -330,8 +330,13 @@ def _run_case(
     budget_exceeded: Optional[bool] = None
     if token_budget is not None or wall_clock_budget_ms is not None:
         budget_exceeded = False
-        if token_budget is not None and usage and usage.get("total_tokens") is not None:
-            if usage["total_tokens"] > token_budget:
+        if token_budget is not None:
+            total_tokens = usage.get("total_tokens") if usage else None
+            # A token-budgeted run without measurable usage cannot establish
+            # that it stayed within budget. Treat it conservatively as an
+            # over-budget failure instead of allowing usage-less backends to
+            # bypass the budget-matched comparison.
+            if total_tokens is None or total_tokens > token_budget:
                 budget_exceeded = True
         if wall_clock_budget_ms is not None and wall_ms > wall_clock_budget_ms:
             budget_exceeded = True

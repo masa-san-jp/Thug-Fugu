@@ -676,6 +676,28 @@ class BudgetManifestHarnessTests(unittest.TestCase):
         self.assertTrue(row["budget_exceeded"])
         self.assertFalse(row["passed"])
 
+    def test_missing_usage_cannot_bypass_token_budget(self):
+        class UsageMissingOrchestrator(FakeOrchestrator):
+            def chat(self, *args, **kwargs):
+                result = super().chat(*args, **kwargs)
+                result.usage = None
+                return result
+
+        orchestrator = UsageMissingOrchestrator(self._config())
+
+        row = eval_script._run_case(
+            self._condition(),
+            orchestrator,
+            self._case(),
+            seed=0,
+            repeat_index=0,
+            repeat_seed=0,
+            token_budget=1000,
+        )
+
+        self.assertTrue(row["budget_exceeded"])
+        self.assertFalse(row["passed"])
+
     def test_within_budget_run_keeps_graded_result(self):
         orchestrator = FakeOrchestrator(self._config())
 
