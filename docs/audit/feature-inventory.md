@@ -115,6 +115,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Coordinator redundancy (no SPOF) | `not implemented` | design only | — |
 | Single-vs-multi-model comparison framework | `stable` | `scripts/evaluate_orchestration.py` | `test_evaluate_orchestration.py` |
 | Reproducible empirical single-vs-multi results | `not implemented` | tracked by #73–#75 | — |
+| Multi-node `model_pool` performance/degradation benchmark (throughput, latency p50/p95/p99, and a healthy-vs-simulated-member-outage success-rate/latency curve; deliberately reports no quality metric — see `docs/operations/multi-node-benchmark.md`) | `experimental` | `scripts/benchmark_cluster.py` | `test_benchmark_cluster.py` |
 
 ## Documentation synchronization
 
