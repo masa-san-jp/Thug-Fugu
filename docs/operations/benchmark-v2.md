@@ -46,6 +46,14 @@ Extends the existing schema; existing fields stay compatible.
 | `gold` | non-empty; must pass its own `grader` (self-consistency, see [Validation](#validation)) |
 | `review_status` | `pending` or `approved`; **only a human may set `approved`** |
 
+Schema examples for all six families are available at
+[`docs/examples/benchmark-v2-task-template.jsonl`](../examples/benchmark-v2-task-template.jsonl).
+These rows contain placeholder prompts and illustrative gold values; they
+are authoring examples only and must **not** be copied into the actual
+calibration/dev/test sets. New tasks must start with `review_status:
+"pending"` and remain pending until a human has checked the prompt, gold
+answer, grader, source/license, and split assignment.
+
 ### Why the decision set is deterministic-only
 
 `exec` (code execution) grading and `freeform` + rubric grading are **not
