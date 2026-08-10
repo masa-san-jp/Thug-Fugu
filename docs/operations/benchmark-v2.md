@@ -145,6 +145,42 @@ always derive it mechanically.
 - **japanese**: any of the above task types, written natively in Japanese
   (not translated from an English task).
 
+To reduce manual authoring and answer-checking, mechanically verified,
+synthetic candidate pools for all six families can be generated with:
+
+```bash
+PYTHONPATH=src python3 scripts/gen_benchmark_tasks.py \
+  --output /tmp/benchmark-v2-candidates.jsonl \
+  --per-family-per-difficulty 10 \
+  --seed 20260810
+```
+
+To remove the manual split/count work too, generate an exact 30/60/60
+pending-review draft set in an **empty directory**:
+
+```bash
+PYTHONPATH=src python3 scripts/gen_benchmark_tasks.py \
+  --output-dir /tmp/benchmark-v2-draft \
+  --seed 20260810
+
+PYTHONPATH=src python3 scripts/validate_tasks.py \
+  /tmp/benchmark-v2-draft/tasks-v2-*.jsonl
+```
+
+This produces 150 unique prompts, 25 per family, exactly 10 test tasks per
+family, and 20% easy tasks in each split. The generator refuses to overwrite
+an existing benchmark file, protecting an approved/locked test set.
+
+Gold values are mechanically computed. Logic candidates are emitted only
+after exhaustive enumeration finds exactly one solution; planning candidates
+use exhaustive ordering counts; long-context candidates are generated
+license-clean and require cross-referencing distant records. Every row
+remains `review_status: "pending"` and includes `gold_rationale`. This output
+is a **candidate pool**, not an approved split: a human still removes weak or
+repetitive tasks, confirms the empirical difficulty band, assigns
+calibration/dev/test, and approves each retained row. Do not regenerate or
+modify the locked test set after it is approved.
+
 Authoring scripts are throwaway and must not be committed, but their
 output must always be preserved in `gold_rationale`. Run
 `scripts/validate_tasks.py` locally (including the gold self-consistency
