@@ -65,6 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gold-answer correctness before use; this validator checks schema and
   self-consistency only, never answer correctness, and never touches
   `review_status`. See `docs/operations/benchmark-v2.md`.
+- New `scripts/gen_benchmark_tasks.py`: deterministically generates
+  license-clean, mechanically scored candidate tasks for all six
+  hard-benchmark-v2 families. It can also create a structurally valid
+  30/60/60 calibration/dev/test draft (150 unique prompts, 20% easy per
+  split, 10 test tasks per family), always with `review_status: pending`;
+  it refuses to overwrite existing benchmark files. Human difficulty,
+  gold/source, split, and locked-test approval remain mandatory.
 - New `coordinator.default_pattern`/`rules[].pattern` value `sequential_dag`:
   a fixed 7-stage inference DAG (`planner` → `solver` → `verifier` →
   `critic` → `reviser` → `claim_judge` → `writer`, `src/fugu_local/
