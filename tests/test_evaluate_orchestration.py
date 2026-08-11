@@ -581,6 +581,30 @@ class EvaluateOrchestrationTests(unittest.TestCase):
                 self.assertTrue(config.models)
                 self.assertTrue(config.roles)
 
+    def test_phase2_family_is_used_as_the_summary_domain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tasks-v2-calibration.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "id": "v2-math-1",
+                        "family": "math",
+                        "difficulty": "hard",
+                        "answer_type": "single",
+                        "prompt": "p",
+                        "gold": "1",
+                        "grader": {"type": "exact", "value": "1"},
+                        "review_status": "pending",
+                    }
+                )
+                + "\n"
+            )
+
+            cases = list(eval_script._load_cases(path))
+
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0].domain, "math")
+
 
 class BudgetManifestHarnessTests(unittest.TestCase):
     def _config(self):

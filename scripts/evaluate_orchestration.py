@@ -264,7 +264,11 @@ def _load_cases(path: Path):
             case_id = raw.get("id")
             prompt = raw.get("prompt")
             grader = raw.get("grader")
-            domain = raw.get("domain", "unspecified")
+            # Phase 1 fixtures use `domain`; the hard-benchmark-v2 schema
+            # uses `family`. Treat family as the canonical grouping key when
+            # present so per-family summaries and WP-7 budget manifests do
+            # not silently collapse Phase 2 rows into "unspecified".
+            domain = raw.get("family", raw.get("domain", "unspecified"))
             if not isinstance(case_id, str) or not case_id:
                 raise ValueError(f"case line {line_number}: id must be a non-empty string")
             if not isinstance(prompt, str) or not prompt:
