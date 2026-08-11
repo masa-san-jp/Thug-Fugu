@@ -62,9 +62,9 @@ class GeneratedBenchmarkTaskTests(unittest.TestCase):
         )
 
         for task in tasks:
-            program = task["prompt"].split("\n\n", 1)[1].split(
-                "\nAnswer with the integer only.", 1
-            )[0]
+            program = (
+                task["prompt"].split("\n\n", 1)[1].split("\nAnswer with the integer only.", 1)[0]
+            )
             output = io.StringIO()
             with redirect_stdout(output):
                 exec(program, {"__builtins__": {"print": print, "range": range}}, {})
