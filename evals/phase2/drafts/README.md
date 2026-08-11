@@ -7,7 +7,7 @@ instead of authoring 150 tasks by hand.
 - Generator: `scripts/gen_benchmark_tasks.py --output-dir evals/phase2/drafts --seed 20260810`
 - Every row is `review_status: "pending"` and carries `gold_rationale`.
 - Gold values are mechanically computed or exhaustively verified
-  (`math`/`coding`/`japanese` computed, `logic`/`planning` enumerated,
+  (`math`/`japanese` computed, `coding` executed, `logic`/`planning` enumerated,
   `long_context` recomputable from the passage).
 - Structural check: `PYTHONPATH=src python3 scripts/validate_tasks.py evals/phase2/drafts/tasks-v2-*.jsonl` → passes.
 
