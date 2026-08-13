@@ -1,7 +1,10 @@
 import importlib.util
+import io
 import json
+import re
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -39,6 +42,35 @@ class GeneratedBenchmarkTaskTests(unittest.TestCase):
         self.assertTrue(all(task["review_status"] == "pending" for task in tasks))
         self.assertTrue(all(task["gold_rationale"] for task in tasks))
         self.assertEqual({task["family"] for task in tasks}, set(gen.FAMILIES))
+
+    def test_math_prompts_use_singular_unit_when_count_is_one(self):
+        tasks = gen.generate_tasks(
+            per_family_per_difficulty=20,
+            seed=23,
+            families=("math",),
+        )
+
+        for task in tasks:
+            self.assertIsNone(re.search(r"\b1 (?:more )?units\b", task["prompt"]))
+            self.assertIsNone(re.search(r"\b1 pallets\b", task["prompt"]))
+
+    def test_coding_gold_is_from_executing_emitted_program(self):
+        tasks = gen.generate_tasks(
+            per_family_per_difficulty=3,
+            seed=29,
+            families=("coding",),
+        )
+
+        for task in tasks:
+            program = (
+                task["prompt"].split("\n\n", 1)[1].split("\nAnswer with the integer only.", 1)[0]
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exec(program, {"__builtins__": {"print": print, "range": range}}, {})
+            actual = output.getvalue().strip()
+            self.assertEqual(task["gold"], actual)
+            self.assertEqual(task["gold_rationale"], f"executed program output: {actual}")
 
     def test_logic_gold_has_exactly_one_exhaustive_solution(self):
         tasks = gen.generate_tasks(
