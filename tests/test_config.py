@@ -107,6 +107,73 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.models[0].timeout_seconds, 30.0)
         self.assertEqual(config.orchestrator.temperature, 1.0)
 
+    def test_legacy_direct_endpoint_gets_default_runtime_profile(self):
+        config = config_from_dict(
+            {
+                "models": [
+                    {
+                        "name": "m",
+                        "backend": "ollama",
+                        "model": "llama3",
+                        "base_url": "http://127.0.0.1:11434/",
+                    }
+                ],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+
+        profile = config.models[0].runtime_profiles()[0]
+        self.assertEqual(profile.identity, "http://127.0.0.1:11434")
+        self.assertEqual(profile.max_inflight, 1)
+        self.assertEqual(profile.value_source, "default")
+
+    def test_object_direct_endpoint_uses_shared_profile_api(self):
+        config = config_from_dict(
+            {
+                "models": [
+                    {
+                        "name": "m",
+                        "backend": "ollama",
+                        "model": "llama3",
+                        "endpoint": {
+                            "url": "http://127.0.0.1:11434",
+                            "max_inflight": 3,
+                            "weight": 2,
+                            "capabilities": {"streaming": "supported"},
+                        },
+                    }
+                ],
+                "roles": [{"name": "planner", "model": "m"}],
+            }
+        )
+
+        profile = config.models[0].runtime_profiles()[0]
+        self.assertEqual(profile.max_inflight, 3)
+        self.assertEqual(profile.weight, 2)
+        self.assertTrue(profile.capabilities.supports("streaming"))
+        self.assertEqual(len(config.runtime_profiles()), 1)
+
+    def test_rejects_invalid_direct_endpoint_profile(self):
+        for field, value in (("max_inflight", 0), ("weight", 0), ("value_source", "guess")):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ConfigError, field):
+                    config_from_dict(
+                        {
+                            "models": [
+                                {
+                                    "name": "m",
+                                    "backend": "ollama",
+                                    "model": "llama3",
+                                    "endpoint": {
+                                        "url": "http://127.0.0.1:11434",
+                                        field: value,
+                                    },
+                                }
+                            ],
+                            "roles": [{"name": "planner", "model": "m"}],
+                        }
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -665,6 +732,48 @@ class ModelPoolConfigTests(unittest.TestCase):
         self.assertEqual(len(config.model_pools[0].endpoints), 2)
         self.assertEqual(config.model_pools[0].cooldown_seconds, 0.0)
         self.assertFalse(config.model_pools[0].health.enabled)
+
+    def test_legacy_and_object_pool_endpoints_share_runtime_profiles(self):
+        config = config_from_dict(
+            self._with_pool(
+                {
+                    "name": "fast",
+                    "backend": "ollama",
+                    "model": "llama3",
+                    "endpoints": [
+                        "http://127.0.0.1:11434/",
+                        {
+                            "url": "http://user:secret@[::1]:11435/?token=secret#x",
+                            "max_inflight": 2,
+                            "capabilities": {"usage_accounting": "supported"},
+                        },
+                    ],
+                }
+            )
+        )
+
+        pool = config.model_pools[0]
+        self.assertEqual(pool.endpoints[0], "http://127.0.0.1:11434/")
+        self.assertEqual(len(pool.runtime_profiles()), 2)
+        self.assertEqual(pool.runtime_profiles()[0].max_inflight, 1)
+        self.assertEqual(pool.runtime_profiles()[1].identity, "http://[::1]:11435")
+        self.assertEqual(pool.runtime_profiles()[1].max_inflight, 2)
+        self.assertTrue(pool.runtime_profiles()[1].capabilities.supports("usage_accounting"))
+
+    def test_rejects_invalid_pool_endpoint_profile(self):
+        with self.assertRaisesRegex(ConfigError, "max_inflight"):
+            config_from_dict(
+                self._with_pool(
+                    {
+                        "name": "fast",
+                        "backend": "ollama",
+                        "model": "llama3",
+                        "endpoints": [
+                            {"url": "http://127.0.0.1:11434", "max_inflight": 0}
+                        ],
+                    }
+                )
+            )
 
     def test_accepts_pool_cooldown_seconds(self):
         config = config_from_dict(
