@@ -51,6 +51,7 @@ Issues = "https://github.com/masa-san-jp/Thug-Fugu/issues"
 dev = [
   "ruff>=0.5",
   "coverage[toml]>=7",
+  "build>=1.2",
 ]
 mcp = [
   "mcp>=1.2",

@@ -448,11 +448,11 @@ python3 -m pip install -e '.[dev]'
 CI と同等の品質チェック:
 
 ```bash
-python3 -m ruff check src tests
-python3 -m ruff format --check src tests
-PYTHONPATH=src python3 -m coverage run -m unittest discover -s tests -v
-python3 -m coverage report --fail-under=85
+make verify
 ```
+
+実装中の高速チェックは `make verify-fast` を使えます。Codexの実装規約
+は [AGENTS.md](AGENTS.md) にあります。
 
 `echo` backend を使えば実 LLM なしでオーケストレーションの配線をテストできます。
 
