@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import logging
 import time
@@ -21,6 +20,7 @@ from .backends import (
 )
 from .config import FuguLocalConfig, ModelConfig, ModelPoolConfig, RoleConfig
 from .coordinator import Coordinator, Plan
+from .execution import FanoutExecutor, FanoutTask
 from .health import HealthMonitor
 from .pipeline import StageCallRequest, StageCallResult, run_sequential_dag
 from .routing import ModelRouter, RouterMember
@@ -127,6 +127,7 @@ class FuguLocalOrchestrator:
         self._routers: Dict[str, ModelRouter] = self._build_routers()
         self._health_monitor = HealthMonitor(self._routers, config.model_pools)
         self._coordinator = self._build_coordinator()
+        self._fanout_executor = FanoutExecutor(config.orchestrator.max_parallel_workers)
 
     def _build_routers(self) -> Dict[str, ModelRouter]:
         routers: Dict[str, ModelRouter] = {}
@@ -206,6 +207,18 @@ class FuguLocalOrchestrator:
 
     def stop_health_monitor(self) -> None:
         self._health_monitor.stop()
+
+    def close(self) -> None:
+        """Stop background resources owned by this orchestrator."""
+
+        self.stop_health_monitor()
+        self._fanout_executor.close()
+
+    def __enter__(self) -> "FuguLocalOrchestrator":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
 
     @property
     def health_monitor_running(self) -> bool:
@@ -1047,52 +1060,51 @@ class FuguLocalOrchestrator:
         deadline: Optional[float] = None,
         seed: Optional[int] = None,
     ) -> List[WorkerResult]:
-        max_workers = min(len(roles), self.config.orchestrator.max_parallel_workers)
-        results_by_role: Dict[str, WorkerResult] = {}
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-        try:
-            futures = {
-                executor.submit(
-                    self._run_role,
+        tasks = [
+            FanoutTask(
+                key=role.name,
+                callback=lambda role=role: self._run_role(
                     role,
                     messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     seed=derive_seed(seed, f"worker:{role.name}"),
-                ): role
-                for role in roles
-            }
-            remaining = None if deadline is None else max(0.0, deadline - time.perf_counter())
-            try:
-                for future in concurrent.futures.as_completed(futures, timeout=remaining):
-                    role = futures[future]
-                    try:
-                        results_by_role[role.name] = future.result()
-                    except Exception as exc:  # noqa: BLE001 - keep role isolation.
-                        results_by_role[role.name] = WorkerResult(
-                            role=role.name,
-                            model=role.model,
-                            error=str(exc),
-                        )
-            except concurrent.futures.TimeoutError:
-                # Deadline reached; stop waiting for the remaining workers below.
-                pass
+                ),
+            )
+            for role in roles
+        ]
+        try:
+            task_results = self._fanout_executor.run(tasks, deadline=deadline)
+        except RuntimeError as exc:
+            raise OrchestrationError("orchestrator is closed") from exc
 
-            for future, role in futures.items():
-                if role.name in results_by_role:
-                    continue
-                future.cancel()
-                results_by_role[role.name] = WorkerResult(
+        worker_results: List[WorkerResult] = []
+        for role, task_result in zip(roles, task_results):
+            if task_result.state == "completed" and isinstance(task_result.value, WorkerResult):
+                worker_results.append(task_result.value)
+                continue
+            if task_result.state == "failed":
+                worker_results.append(
+                    WorkerResult(
+                        role=role.name,
+                        model=role.model,
+                        error=str(task_result.error or "worker execution failed"),
+                    )
+                )
+                continue
+            if task_result.state == "not_started":
+                error = "request deadline exceeded before start"
+            else:
+                error = "request deadline exceeded before completion"
+            worker_results.append(
+                WorkerResult(
                     role=role.name,
                     model=role.model,
-                    error="request deadline exceeded before completion",
+                    error=error,
                     timed_out=True,
                 )
-        finally:
-            # Do not block on still-running backend calls; they will hit their own
-            # per-model timeout. Returning promptly is the point of a request deadline.
-            executor.shutdown(wait=False, cancel_futures=True)
-        return [results_by_role[role.name] for role in roles]
+            )
+        return worker_results
 
     def _run_role(
         self,

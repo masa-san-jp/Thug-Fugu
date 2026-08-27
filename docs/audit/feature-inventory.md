@@ -29,13 +29,13 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 
 | Feature | Status | Code | Tests |
 |---|---|---|---|
-| Multi-role worker fan-out + synthesizer merge | `stable` | `orchestrator.py` (`_run_role_split`, `_run_workers`, `_synthesize`) | `test_orchestrator.py` |
+| Multi-role worker fan-out + synthesizer merge | `stable` | `execution.py` (`FanoutExecutor`), `orchestrator.py` (`_run_role_split`, `_run_workers`, `_synthesize`) | `test_execution.py`, `test_orchestrator.py` |
 | Deterministic merge fallback (no/failed synthesizer) | `stable` | `orchestrator.py` (`_deterministic_merge`) | `test_orchestrator.py` |
 | Selection policies `all` / `keyword` | `stable` | `orchestrator.py` (`_select_worker_roles`), `config.py` | `test_orchestrator.py` |
 | Adaptive coordinator `direct` / `role_split` / `parallel_ensemble` | `stable` | `coordinator.py`, `orchestrator.py` | `test_coordinator.py`, `test_orchestrator.py` |
 | Normalized-majority and judge-tiebreak ensemble voting (`answers.py`, `coordinator.ensemble.normalize`/`judge_role`, `vote: "judge_tiebreak"`, `vote_summary`) | `stable` | `answers.py`, `orchestrator.py` (`_vote_content`, `_judge_tiebreak`), `config.py` | `test_answers.py`, `test_orchestrator.py` (`EnsembleVoteTests`), `test_config.py` |
 | Verifier retry loop (bounded budget) | `stable` | `orchestrator.py` (`_run_verifier`) | `test_orchestrator.py` (`VerifierRetryTests`) |
-| Request deadline + partial-result fallback | `stable` | `orchestrator.py` (`_run_workers`, deadline) | `test_orchestrator.py` (`RequestDeadlineTests`) |
+| Request deadline + partial-result fallback | `stable` | `execution.py` (`FanoutExecutor` states), `orchestrator.py` (`_run_workers`, deadline) | `test_execution.py`, `test_orchestrator.py` (`RequestDeadlineTests`) |
 | Structured non-sensitive per-run logging | `stable` | `orchestrator.py` (`_log_run`) | `test_orchestrator.py` (`ObservabilityTest`) |
 | Optional per-request seeding (`orchestrator.seed`, `chat(seed=...)`), derived per worker/verifier/synthesizer/coordinator stream and passed to Ollama/OpenAI-compatible backends when set | `experimental` | `orchestrator.py` (`derive_seed`), `backends.py`, `coordinator.py` | `test_orchestrator.py` (`DeriveSeedTests`, `SeedPropagationTests`), `test_backends.py` (`SeedPayloadTests`), `test_config.py` |
 | `sequential_dag` pattern: fixed 7-stage inference DAG (planner→solver→verifier→critic→reviser→claim_judge→writer) where each stage consumes prior stages' structured output, with per-stage bypass rules, solver fanout, and lenient stage-output JSON parsing (`coordinator.dag`, see `docs/design/sequential-inference-dag.md`) | `experimental` | `stages.py`, `pipeline.py` (`run_sequential_dag`), `orchestrator.py` (`_run_sequential_dag`), `config.py` (`DagConfig`, `_validate_dag`) | `test_stages.py`, `test_pipeline.py`, `test_orchestrator.py` (`SequentialDagTests`), `test_config.py` (`DagConfigTests`), `test_server.py` (`test_sequential_dag_streaming_uses_buffered_fallback`) |

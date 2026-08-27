@@ -35,8 +35,8 @@ class FuguLocalHTTPServer(ThreadingHTTPServer):
     ):
         if max_concurrent_requests <= 0:
             raise ValueError("max_concurrent_requests must be positive")
-        super().__init__(server_address, RequestHandlerClass)
         self.orchestrator = orchestrator
+        super().__init__(server_address, RequestHandlerClass)
         self.max_concurrent_requests = max_concurrent_requests
         self._request_semaphore = threading.BoundedSemaphore(max_concurrent_requests)
         queue_config = orchestrator.config.server.queue
@@ -50,10 +50,12 @@ class FuguLocalHTTPServer(ThreadingHTTPServer):
         try:
             super().serve_forever(poll_interval=poll_interval)
         finally:
-            self.orchestrator.stop_health_monitor()
+            self.orchestrator.close()
 
     def server_close(self) -> None:
-        self.orchestrator.stop_health_monitor()
+        orchestrator = getattr(self, "orchestrator", None)
+        if orchestrator is not None:
+            orchestrator.close()
         super().server_close()
 
     def acquire_request_slot(self) -> bool:
@@ -642,17 +644,24 @@ def serve(
 ) -> None:
     validate_bind_host(host, allow_unsafe_bind=allow_unsafe_bind)
     orchestrator = FuguLocalOrchestrator(config)
-    httpd = FuguLocalHTTPServer(
-        (host, port),
-        FuguLocalHandler,
-        orchestrator,
-        max_concurrent_requests=max_concurrent_requests,
-    )
-    print(
-        f"fugu-local serving on http://{host}:{port} "
-        f"(max_concurrent_requests={max_concurrent_requests})"
-    )
-    httpd.serve_forever()
+    try:
+        httpd = FuguLocalHTTPServer(
+            (host, port),
+            FuguLocalHandler,
+            orchestrator,
+            max_concurrent_requests=max_concurrent_requests,
+        )
+    except Exception:
+        orchestrator.close()
+        raise
+    try:
+        print(
+            f"fugu-local serving on http://{host}:{port} "
+            f"(max_concurrent_requests={max_concurrent_requests})"
+        )
+        httpd.serve_forever()
+    finally:
+        httpd.server_close()
 
 
 def _chat_completion_stream_events(

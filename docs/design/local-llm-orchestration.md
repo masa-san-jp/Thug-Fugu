@@ -184,7 +184,7 @@ class LLMBackend(Protocol):
    - `keyword`: `always_include` または `keywords` が入力に一致したロール
    - 0件の場合は最初の worker を fallback として使う
 4. worker ごとに `system_prompt` を付与した `ChatRequest` を作る。
-5. `ThreadPoolExecutor` で並列実行する。
+5. `FanoutExecutor`（orchestrator 寿命に紐づく固定サイズ pool）へ一括 submit して並列実行する。
 6. エラーはロール単位で捕捉し、他ロールの実行を継続する。
 7. synthesizer が存在すれば、worker 出力を構造化して統合プロンプトを作り、統合LLMを呼ぶ。
 8. synthesizer がない、または失敗した場合は deterministic に結合して返す。

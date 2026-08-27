@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Lifecycle-bound bounded fan-out execution for orchestrator workers: a fixed
+  executor is reused across requests, preserves role order, isolates worker
+  failures, reports queued versus running-at-deadline work, and is reclaimed by
+  orchestrator/server/CLI shutdown. See `docs/design/fanout-executor.md`.
 - Reproducible single-vs-multi configuration evaluation bundles with manifests,
   input snapshots, full JSONL outputs, CSV/summary metrics, token usage, hardware
   and quantization metadata, and manifest-based reruns.

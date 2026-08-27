@@ -89,31 +89,34 @@ def main(argv: Optional[list] = None) -> int:
 
     if args.command == "run":
         orchestrator = FuguLocalOrchestrator(config)
-        if args.json:
+        try:
+            if args.json:
+                try:
+                    payload = consult(
+                        config,
+                        args.prompt,
+                        temperature=args.temperature,
+                        max_tokens=args.max_tokens,
+                        orchestrator=orchestrator,
+                    )
+                except OrchestrationError as exc:
+                    print(f"Orchestration error: {exc}", file=sys.stderr)
+                    return 1
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+                return 0
             try:
-                payload = consult(
-                    config,
-                    args.prompt,
+                result = orchestrator.chat(
+                    [ChatMessage(role="user", content=args.prompt)],
                     temperature=args.temperature,
                     max_tokens=args.max_tokens,
-                    orchestrator=orchestrator,
                 )
             except OrchestrationError as exc:
                 print(f"Orchestration error: {exc}", file=sys.stderr)
                 return 1
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            print(result.content)
             return 0
-        try:
-            result = orchestrator.chat(
-                [ChatMessage(role="user", content=args.prompt)],
-                temperature=args.temperature,
-                max_tokens=args.max_tokens,
-            )
-        except OrchestrationError as exc:
-            print(f"Orchestration error: {exc}", file=sys.stderr)
-            return 1
-        print(result.content)
-        return 0
+        finally:
+            orchestrator.close()
 
     parser.print_help()
     return 2

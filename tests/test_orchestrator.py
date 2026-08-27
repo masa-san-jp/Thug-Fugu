@@ -1068,6 +1068,41 @@ def make_deadline_config(request_timeout_seconds=None):
 
 
 class RequestDeadlineTests(unittest.TestCase):
+    def test_worker_results_keep_role_order_when_completion_order_differs(self):
+        planner = SleepBackend("planner output", 0.03)
+        coder = StaticBackend("coder output")
+        orchestrator = FuguLocalOrchestrator(
+            make_config(synthesizer=False),
+            backend_overrides={"planner-model": planner, "coder-model": coder},
+        )
+
+        try:
+            result = orchestrator.chat([ChatMessage(role="user", content="hello")])
+        finally:
+            orchestrator.close()
+
+        self.assertEqual([worker.role for worker in result.worker_results], ["planner", "coder"])
+        self.assertEqual(
+            [worker.content for worker in result.worker_results],
+            ["planner output", "coder output"],
+        )
+
+    def test_close_reclaims_fanout_pool_and_rejects_new_request(self):
+        orchestrator = FuguLocalOrchestrator(
+            make_config(synthesizer=False),
+            backend_overrides={
+                "planner-model": StaticBackend("planner output"),
+                "coder-model": StaticBackend("coder output"),
+            },
+        )
+
+        orchestrator.chat([ChatMessage(role="user", content="hello")])
+        self.assertEqual(orchestrator._fanout_executor.active_task_count, 0)
+        orchestrator.close()
+
+        with self.assertRaisesRegex(OrchestrationError, "closed"):
+            orchestrator.chat([ChatMessage(role="user", content="hello")])
+
     def test_default_no_deadline_waits_for_all_workers(self):
         orchestrator = FuguLocalOrchestrator(
             make_deadline_config(),
