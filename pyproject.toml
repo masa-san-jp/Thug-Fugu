@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "thug-fugu-local"
 version = "0.1.0"
-description = "Multi-role local LLM orchestration for Ollama and OpenAI-compatible backends (planner/coder/reviewer/synthesizer, OpenAI-compatible HTTP API, MCP consult tool). / Ollama・OpenAI 互換バックエンド向けの複数ロール協調ローカル LLM オーケストレーション。"
+description = "Parallel local-LLM role orchestration in Python for Ollama and OpenAI-compatible servers; CLI, local OpenAI-compatible API, optional MCP. Experimental, local-first."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
