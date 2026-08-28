@@ -1,0 +1,11 @@
+{
+  "prefix_cache": {
+    "runtime": "ollama",
+    "runtime_version": "unknown",
+    "model": "fixture-model",
+    "quantization": "unknown",
+    "base_url": "http://127.0.0.1:11434",
+    "launch": {"command": ["ollama", "serve"], "flags": []},
+    "native_cache": {"status": "unknown", "evidence": "Ollama cache hit is not exposed by this fixture"}
+  }
+}

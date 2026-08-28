@@ -1,0 +1,29 @@
+{
+  "runtime_version": "fixture-ollama-1.0",
+  "cases": {
+    "short": {
+      "current": [
+        {"repeat": 0, "worker": 1, "ok": true, "ttft_ms": 100, "wall_ms": 140, "prompt_eval_time_ms": 40, "prompt_tokens": 80},
+        {"repeat": 0, "worker": 2, "ok": true, "ttft_ms": 102, "wall_ms": 142, "prompt_eval_time_ms": 41, "prompt_tokens": 80},
+        {"repeat": 1, "worker": 1, "ok": true, "ttft_ms": 98, "wall_ms": 138, "prompt_eval_time_ms": 39, "prompt_tokens": 80},
+        {"repeat": 1, "worker": 2, "ok": true, "ttft_ms": 99, "wall_ms": 139, "prompt_eval_time_ms": 40, "prompt_tokens": 80}
+      ],
+      "common_prefix": [
+        {"repeat": 0, "worker": 1, "ok": true, "ttft_ms": 90, "wall_ms": 125, "prompt_eval_time_ms": 30, "prompt_tokens": 80},
+        {"repeat": 0, "worker": 2, "ok": true, "ttft_ms": 91, "wall_ms": 126, "prompt_eval_time_ms": 31, "prompt_tokens": 80},
+        {"repeat": 1, "worker": 1, "ok": true, "ttft_ms": 70, "wall_ms": 105, "prompt_eval_time_ms": 15, "prompt_tokens": 80},
+        {"repeat": 1, "worker": 2, "ok": true, "ttft_ms": 71, "wall_ms": 106, "prompt_eval_time_ms": 16, "prompt_tokens": 80}
+      ],
+      "runtime_native": [
+        {"repeat": 0, "worker": 1, "ok": true, "ttft_ms": 80, "wall_ms": 115, "prompt_eval_time_ms": 25, "prompt_tokens": 80},
+        {"repeat": 0, "worker": 2, "ok": true, "ttft_ms": 81, "wall_ms": 116, "prompt_eval_time_ms": 26, "prompt_tokens": 80},
+        {"repeat": 1, "worker": 1, "ok": true, "ttft_ms": 60, "wall_ms": 90, "prompt_eval_time_ms": 10, "prompt_tokens": 80, "cache_hit": {"status": "direct", "value": true, "method": "fixture.cache_hit"}},
+        {"repeat": 1, "worker": 2, "ok": true, "ttft_ms": 61, "wall_ms": 91, "prompt_eval_time_ms": 11, "prompt_tokens": 80, "cache_hit": {"status": "direct", "value": true, "method": "fixture.cache_hit"}}
+      ]
+    },
+    "long_context": {"current": [], "common_prefix": [], "runtime_native": []},
+    "japanese": {"current": [], "common_prefix": [], "runtime_native": []},
+    "coding": {"current": [], "common_prefix": [], "runtime_native": []},
+    "prompt_injection": {"current": [], "common_prefix": [], "runtime_native": []}
+  }
+}

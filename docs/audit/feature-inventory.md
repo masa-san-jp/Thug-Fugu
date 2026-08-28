@@ -52,6 +52,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Active health probes (Ollama `/api/tags`, OpenAI `/v1/models`) | `stable` | `health.py`, `backends.py` (`probe_*`) | `test_health.py`, `test_backends.py` |
 | Health-aware ordering + strict model presence | `stable` | `routing.py`, `health.py`, `config.py` | `test_routing.py`, `test_health.py` |
 | Server plan / single-GPU parallel role planning | `stable` | `serverplan.py` | `test_serverplan.py` |
+| Shared-prefix / prefix-cache research spike (current/common-prefix/runtime-native layouts, timing and cache evidence) | `experimental` | `scripts/benchmark_prefix_cache.py` | `tests/test_benchmark_prefix_cache.py` |
 
 ### Streaming
 

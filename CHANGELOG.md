@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Reproducible shared-prefix / prefix-cache spike runner comparing current,
+  portable common-prefix, and runtime-native prompt layouts with explicit
+  direct/estimated/unknown cache evidence and a human-gated Go/No-Go artifact.
 - Reproducible single-vs-multi configuration evaluation bundles with manifests,
   input snapshots, full JSONL outputs, CSV/summary metrics, token usage, hardware
   and quantization metadata, and manifest-based reruns.
