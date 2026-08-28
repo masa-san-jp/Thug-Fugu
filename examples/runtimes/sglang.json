@@ -1,0 +1,28 @@
+{
+  "runtime_conformance": {
+    "runtime": "SGLang",
+    "runtime_version": "unknown",
+    "model": "local-model",
+    "quantization": "unknown",
+    "base_url": "http://127.0.0.1:30000",
+    "launch": {
+      "command": ["python", "-m", "sglang.launch_server"],
+      "flags": ["--model-path", "<MODEL_ID_OR_PATH>", "--host", "127.0.0.1", "--port", "30000"]
+    }
+  },
+  "models": [
+    {
+      "name": "runtime-model",
+      "backend": "openai-compatible",
+      "model": "local-model",
+      "base_url": "http://127.0.0.1:30000",
+      "timeout_seconds": 120
+    }
+  ],
+  "roles": [
+    {"name": "worker-a", "model": "runtime-model", "always_include": true},
+    {"name": "worker-b", "model": "runtime-model", "always_include": true},
+    {"name": "synthesizer", "model": "runtime-model", "is_synthesizer": true}
+  ],
+  "orchestrator": {"selection_policy": "all", "max_parallel_workers": 2, "temperature": 0.2}
+}

@@ -52,6 +52,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Active health probes (Ollama `/api/tags`, OpenAI `/v1/models`) | `stable` | `health.py`, `backends.py` (`probe_*`) | `test_health.py`, `test_backends.py` |
 | Health-aware ordering + strict model presence | `stable` | `routing.py`, `health.py`, `config.py` | `test_routing.py`, `test_health.py` |
 | Server plan / single-GPU parallel role planning | `stable` | `serverplan.py` | `test_serverplan.py` |
+| Runtime conformance matrix with fixture contracts and config-only recipes (Ollama, OpenAI-compatible, llama.cpp, vLLM, SGLang) | `experimental` | `scripts/check_runtime_conformance.py`, `examples/runtimes/` | `tests/test_runtime_conformance.py` |
 
 ### Streaming
 
@@ -145,8 +146,10 @@ Resolved by [#71](https://github.com/masa-san-jp/Thug-Fugu/issues/71) on
 - The evaluation harness records quality, latency, errors, raw output, token
   usage, config/seed/quantization/hardware metadata, and rerunnable manifests.
   Automatic power and total-cost collection remains Phase 1 work (#74).
-- No machine-readable capability profile per model exists yet (Epic #69 Phase 2/3;
-  issues #82–#85).
+- Runtime conformance now emits a sanitized machine-readable profile for the
+  selected runtime/model, but semantic capability support and operational
+  concurrency/cache behavior remain `unknown` until explicitly observed
+  (`scripts/check_runtime_conformance.py`, Epic #69 Phase 2/3; issues #82–#85).
 
 ## How to update this document
 

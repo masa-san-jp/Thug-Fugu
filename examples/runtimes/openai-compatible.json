@@ -1,0 +1,26 @@
+{
+  "runtime_conformance": {
+    "runtime": "openai-compatible",
+    "runtime_version": "unknown",
+    "model": "local-model",
+    "quantization": "unknown",
+    "base_url": "http://127.0.0.1:8000",
+    "launch": {"command": ["use-existing-openai-compatible-server"], "flags": []}
+  },
+  "models": [
+    {
+      "name": "runtime-model",
+      "backend": "openai-compatible",
+      "model": "local-model",
+      "base_url": "http://127.0.0.1:8000",
+      "api_key": "${OPENAI_API_KEY}",
+      "timeout_seconds": 120
+    }
+  ],
+  "roles": [
+    {"name": "worker-a", "model": "runtime-model", "always_include": true},
+    {"name": "worker-b", "model": "runtime-model", "always_include": true},
+    {"name": "synthesizer", "model": "runtime-model", "is_synthesizer": true}
+  ],
+  "orchestrator": {"selection_policy": "all", "max_parallel_workers": 2, "temperature": 0.2}
+}

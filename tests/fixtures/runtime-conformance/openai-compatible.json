@@ -1,0 +1,22 @@
+{
+  "runtime_version": "fixture-openai-compatible-1.0",
+  "responses": {
+    "health_models": {"status": 200, "body": {"data": [{"id": "fixture-model"}]}},
+    "non_stream": {
+      "status": 200,
+      "body": {
+        "choices": [{"message": {"role": "assistant", "content": "fixture"}}],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}
+      }
+    },
+    "stream": {
+      "status": 200,
+      "lines": ["data: {\"choices\":[{\"delta\":{\"content\":\"fixture\"}}]}", "data: [DONE]"]
+    }
+  },
+  "capabilities": {
+    "seed": {"status": "unknown", "evidence": "fixture does not assert seed handling"},
+    "tools": {"status": "unknown", "evidence": "fixture does not assert tool calls"},
+    "structured_output": {"status": "unknown", "evidence": "fixture does not assert JSON output"}
+  }
+}

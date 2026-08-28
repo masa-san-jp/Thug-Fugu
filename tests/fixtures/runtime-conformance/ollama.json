@@ -1,0 +1,26 @@
+{
+  "runtime_version": "fixture-ollama-1.0",
+  "responses": {
+    "health_models": {"status": 200, "body": {"models": [{"name": "fixture-model"}]}},
+    "non_stream": {
+      "status": 200,
+      "body": {
+        "message": {"role": "assistant", "content": "fixture"},
+        "prompt_eval_count": 4,
+        "eval_count": 3
+      }
+    },
+    "stream": {
+      "status": 200,
+      "lines": [
+        "{\"message\":{\"role\":\"assistant\",\"content\":\"fixture\"},\"done\":false}",
+        "{\"done\":true}"
+      ]
+    }
+  },
+  "capabilities": {
+    "seed": {"status": "unknown", "evidence": "fixture does not assert seed handling"},
+    "tools": {"status": "unknown", "evidence": "fixture does not assert tool calls"},
+    "structured_output": {"status": "unknown", "evidence": "fixture does not assert JSON output"}
+  }
+}

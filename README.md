@@ -232,6 +232,11 @@ OpenAI 互換サーバー（LM Studio / vLLM 等）を使う場合は `backend: 
 | `openai-compatible` | LM Studio / llama.cpp server / vLLM 等の OpenAI 互換 API | `base_url`、必要に応じ `api_key` |
 | `echo` | 実 LLM を呼ばず入力をそのまま返す。テスト・配線確認用 | なし |
 
+Ollama、汎用 OpenAI 互換 API、llama.cpp、vLLM、SGLang の交換可能性を同じ
+契約で確認する場合は [runtime conformance](docs/operations/runtime-conformance.md)
+と [`examples/runtimes/`](examples/runtimes/) を使います。実ランタイムへ接続
+しない fixture 検証も可能です。
+
 ---
 
 ## パフォーマンス特性

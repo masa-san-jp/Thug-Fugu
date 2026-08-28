@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Runtime conformance runner and sanitized capability artifacts for Ollama,
+  generic OpenAI-compatible servers, llama.cpp, vLLM, and SGLang. Includes
+  offline fixture contracts and config-only runtime recipes; unprobed or
+  unverified capabilities remain explicitly `unknown`.
 - Reproducible single-vs-multi configuration evaluation bundles with manifests,
   input snapshots, full JSONL outputs, CSV/summary metrics, token usage, hardware
   and quantization metadata, and manifest-based reruns.

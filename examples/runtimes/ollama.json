@@ -1,0 +1,25 @@
+{
+  "runtime_conformance": {
+    "runtime": "ollama",
+    "runtime_version": "unknown",
+    "model": "llama3.1",
+    "quantization": "unknown",
+    "base_url": "http://127.0.0.1:11434",
+    "launch": {"command": ["ollama", "serve"], "flags": []}
+  },
+  "models": [
+    {
+      "name": "runtime-model",
+      "backend": "ollama",
+      "model": "llama3.1",
+      "base_url": "http://127.0.0.1:11434",
+      "timeout_seconds": 120
+    }
+  ],
+  "roles": [
+    {"name": "worker-a", "model": "runtime-model", "always_include": true},
+    {"name": "worker-b", "model": "runtime-model", "always_include": true},
+    {"name": "synthesizer", "model": "runtime-model", "is_synthesizer": true}
+  ],
+  "orchestrator": {"selection_policy": "all", "max_parallel_workers": 2, "temperature": 0.2}
+}
