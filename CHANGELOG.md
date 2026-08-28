@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Injectable standard-library HTTP transport for Ollama and OpenAI-compatible
+  JSON/NDJSON/SSE calls, with per-thread endpoint connection reuse, total
+  timeout budgets, response cleanup, redaction preservation, and transport
+  timing hooks. See `docs/design/http-transport.md`.
 - Reproducible single-vs-multi configuration evaluation bundles with manifests,
   input snapshots, full JSONL outputs, CSV/summary metrics, token usage, hardware
   and quantization metadata, and manifest-based reruns.

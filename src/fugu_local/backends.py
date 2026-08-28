@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol
 
 from .config import ModelConfig
+from .transport import (
+    HTTPTransport,
+    PersistentHTTPTransport,
+    TimingHook,
+    TransportError,
+)
 
 
 class BackendError(RuntimeError):
@@ -146,29 +152,39 @@ class StreamingLLMBackend(Protocol):
     def stream_chat(self, request: ChatRequest) -> Iterator[ChatStreamChunk]: ...
 
 
+_DEFAULT_TRANSPORT = PersistentHTTPTransport()
+atexit.register(_DEFAULT_TRANSPORT.close)
+
+
 def probe_ollama(
     base_url: str,
     *,
     timeout_seconds: float,
     model: Optional[str] = None,
     require_model: bool = False,
+    transport: Optional[HTTPTransport] = None,
+    timing_hook: Optional[TimingHook] = None,
 ) -> bool:
     """Return whether an Ollama endpoint responds successfully to ``/api/tags``."""
 
     url = f"{base_url.rstrip('/')}/api/tags"
-    request = urllib.request.Request(
-        url,
-        headers={"accept": "application/json"},
-        method="GET",
-    )
+    active_transport = transport or _DEFAULT_TRANSPORT
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with active_transport.request(
+            "GET",
+            url,
+            body=None,
+            headers={"accept": "application/json"},
+            timeout=timeout_seconds,
+            timing_hook=timing_hook,
+        ) as response:
             if not 200 <= response.status < 300:
                 return False
             if not require_model:
+                response.read()
                 return True
             payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, TimeoutError, urllib.error.URLError):
+    except (OSError, TimeoutError, TransportError, urllib.error.URLError):
         return False
     except (UnicodeDecodeError, json.JSONDecodeError):
         return False
@@ -189,6 +205,8 @@ def probe_openai_compatible(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     require_model: bool = False,
+    transport: Optional[HTTPTransport] = None,
+    timing_hook: Optional[TimingHook] = None,
 ) -> bool:
     """Return whether an OpenAI-compatible endpoint responds to ``/v1/models``."""
 
@@ -196,15 +214,23 @@ def probe_openai_compatible(
     headers = {"accept": "application/json"}
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(url, headers=headers, method="GET")
+    active_transport = transport or _DEFAULT_TRANSPORT
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with active_transport.request(
+            "GET",
+            url,
+            body=None,
+            headers=headers,
+            timeout=timeout_seconds,
+            timing_hook=timing_hook,
+        ) as response:
             if not 200 <= response.status < 300:
                 return False
             if not require_model:
+                response.read()
                 return True
             payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, TimeoutError, urllib.error.URLError):
+    except (OSError, TimeoutError, TransportError, urllib.error.URLError):
         return False
     except (UnicodeDecodeError, json.JSONDecodeError):
         return False
@@ -215,11 +241,16 @@ def probe_openai_compatible(
     return any(isinstance(item, Mapping) and item.get("id") == model for item in models)
 
 
-def build_backend(config: ModelConfig) -> LLMBackend:
+def build_backend(
+    config: ModelConfig,
+    *,
+    transport: Optional[HTTPTransport] = None,
+    timing_hook: Optional[TimingHook] = None,
+) -> LLMBackend:
     if config.backend == "ollama":
-        return OllamaBackend(config)
+        return OllamaBackend(config, transport=transport, timing_hook=timing_hook)
     if config.backend == "openai-compatible":
-        return OpenAICompatibleBackend(config)
+        return OpenAICompatibleBackend(config, transport=transport, timing_hook=timing_hook)
     if config.backend == "echo":
         return EchoBackend(config)
     raise BackendError(f"Unsupported backend: {config.backend}")
@@ -228,8 +259,16 @@ def build_backend(config: ModelConfig) -> LLMBackend:
 class OpenAICompatibleBackend:
     """Adapter for LM Studio, llama.cpp server, vLLM, and similar local servers."""
 
-    def __init__(self, config: ModelConfig):
+    def __init__(
+        self,
+        config: ModelConfig,
+        *,
+        transport: Optional[HTTPTransport] = None,
+        timing_hook: Optional[TimingHook] = None,
+    ):
         self.config = config
+        self.transport = transport if transport is not None else _DEFAULT_TRANSPORT
+        self.timing_hook = timing_hook
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         base_url = (self.config.base_url or "").rstrip("/")
@@ -252,6 +291,8 @@ class OpenAICompatibleBackend:
             payload,
             timeout=self.config.timeout_seconds,
             api_key=self.config.api_key,
+            transport=self.transport,
+            timing_hook=self.timing_hook,
         )
         try:
             choice = response["choices"][0]
@@ -293,6 +334,8 @@ class OpenAICompatibleBackend:
             payload,
             timeout=self.config.timeout_seconds,
             api_key=self.config.api_key,
+            transport=self.transport,
+            timing_hook=self.timing_hook,
         ):
             if not line.startswith("data:"):
                 continue
@@ -343,8 +386,16 @@ class OpenAICompatibleBackend:
 class OllamaBackend:
     """Adapter for Ollama's /api/chat endpoint."""
 
-    def __init__(self, config: ModelConfig):
+    def __init__(
+        self,
+        config: ModelConfig,
+        *,
+        transport: Optional[HTTPTransport] = None,
+        timing_hook: Optional[TimingHook] = None,
+    ):
         self.config = config
+        self.transport = transport if transport is not None else _DEFAULT_TRANSPORT
+        self.timing_hook = timing_hook
 
     def chat(self, request: ChatRequest) -> ChatResponse:
         base_url = (self.config.base_url or "").rstrip("/")
@@ -366,6 +417,8 @@ class OllamaBackend:
             payload,
             timeout=self.config.timeout_seconds,
             api_key=self.config.api_key,
+            transport=self.transport,
+            timing_hook=self.timing_hook,
         )
         try:
             message = response["message"]
@@ -412,6 +465,8 @@ class OllamaBackend:
             payload,
             timeout=self.config.timeout_seconds,
             api_key=self.config.api_key,
+            transport=self.transport,
+            timing_hook=self.timing_hook,
         ):
             try:
                 decoded = json.loads(line)
@@ -472,6 +527,8 @@ def _post_stream_lines(
     *,
     timeout: float,
     api_key: Optional[str] = None,
+    transport: Optional[HTTPTransport] = None,
+    timing_hook: Optional[TimingHook] = None,
 ) -> Iterator[str]:
     data = json.dumps(payload).encode("utf-8")
     headers = {
@@ -480,26 +537,36 @@ def _post_stream_lines(
     }
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     safe_url = _safe_url(url)
+    active_transport = transport or _DEFAULT_TRANSPORT
     try:
-        response = urllib.request.urlopen(request, timeout=timeout)
+        response = active_transport.request(
+            "POST",
+            url,
+            body=data,
+            headers=headers,
+            timeout=timeout,
+            timing_hook=timing_hook,
+        )
     except urllib.error.HTTPError as exc:
-        try:
-            exc.read()
-        except Exception:  # noqa: BLE001 - best-effort cleanup only.
-            pass
+        _discard_http_error_body(exc)
         raise BackendError(
             f"HTTP {exc.code} from {safe_url} (backend response body redacted)"
         ) from exc
     except urllib.error.URLError as exc:
         raise BackendError(f"Could not reach {safe_url}: {exc.reason}") from exc
-    except TimeoutError as exc:
+    except (OSError, TimeoutError, TransportError) as exc:
         raise BackendError(f"Timed out calling {safe_url}") from exc
 
     try:
         with response:
-            for raw_line in response:
+            if not 200 <= _response_status(response) < 300:
+                response.read()
+                raise BackendError(
+                    f"HTTP {_response_status(response)} from {safe_url} "
+                    "(backend response body redacted)"
+                )
+            for raw_line in _response_lines(response):
                 try:
                     line = raw_line.decode("utf-8").strip()
                 except UnicodeDecodeError as exc:
@@ -508,7 +575,7 @@ def _post_stream_lines(
                     ) from exc
                 if line:
                     yield line
-    except (OSError, TimeoutError) as exc:
+    except (OSError, TimeoutError, TransportError) as exc:
         raise BackendError(f"Streaming connection failed for {safe_url}") from exc
 
 
@@ -518,6 +585,8 @@ def _post_json(
     *,
     timeout: float,
     api_key: Optional[str] = None,
+    transport: Optional[HTTPTransport] = None,
+    timing_hook: Optional[TimingHook] = None,
 ) -> Mapping:
     data = json.dumps(payload).encode("utf-8")
     headers = {
@@ -526,25 +595,35 @@ def _post_json(
     }
     if api_key:
         headers["authorization"] = f"Bearer {api_key}"
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     safe_url = _safe_url(url)
+    active_transport = transport or _DEFAULT_TRANSPORT
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with active_transport.request(
+            "POST",
+            url,
+            body=data,
+            headers=headers,
+            timeout=timeout,
+            timing_hook=timing_hook,
+        ) as response:
+            if not 200 <= _response_status(response) < 300:
+                response.read()
+                raise BackendError(
+                    f"HTTP {_response_status(response)} from {safe_url} "
+                    "(backend response body redacted)"
+                )
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         # Read and discard the body so the connection can be cleaned up, but never
         # surface backend response bodies because they may contain prompts, model
         # output, request metadata, or credentials echoed by a local server.
-        try:
-            exc.read()
-        except Exception:  # noqa: BLE001 - best-effort cleanup only.
-            pass
+        _discard_http_error_body(exc)
         raise BackendError(
             f"HTTP {exc.code} from {safe_url} (backend response body redacted)"
         ) from exc
     except urllib.error.URLError as exc:
         raise BackendError(f"Could not reach {safe_url}: {exc.reason}") from exc
-    except TimeoutError as exc:
+    except (OSError, TimeoutError, TransportError) as exc:
         raise BackendError(f"Timed out calling {safe_url}") from exc
 
     try:
@@ -554,6 +633,30 @@ def _post_json(
     if not isinstance(decoded, Mapping):
         raise BackendError(f"JSON response from {safe_url} must be an object")
     return decoded
+
+
+def _response_status(response: object) -> int:
+    status = getattr(response, "status", 200)
+    return status if isinstance(status, int) else 200
+
+
+def _response_lines(response: object) -> Iterator[bytes]:
+    iter_lines = getattr(response, "iter_lines", None)
+    if callable(iter_lines):
+        yield from iter_lines()
+        return
+    yield from response  # type: ignore[misc]
+
+
+def _discard_http_error_body(error: urllib.error.HTTPError) -> None:
+    try:
+        error.read()
+    except Exception:  # noqa: BLE001 - best-effort cleanup only.
+        pass
+    finally:
+        close = getattr(error, "close", None)
+        if callable(close):
+            close()
 
 
 def _safe_url(url: str) -> str:

@@ -50,6 +50,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Failover across pool members | `stable` | `routing.py` (`chat`) | `test_routing.py` |
 | Passive cooldown / circuit breaker | `stable` | `routing.py` (`_record_failure`) | `test_routing.py` |
 | Active health probes (Ollama `/api/tags`, OpenAI `/v1/models`) | `stable` | `health.py`, `backends.py` (`probe_*`) | `test_health.py`, `test_backends.py` |
+| Injectable HTTP transport with per-thread endpoint connection reuse, shared JSON/NDJSON/SSE response lifecycle, timeout budget, redaction, and timing hook | `experimental` | `transport.py`, `backends.py` (`_post_json`, `_post_stream_lines`) | `test_transport.py`, `test_backends.py` |
 | Health-aware ordering + strict model presence | `stable` | `routing.py`, `health.py`, `config.py` | `test_routing.py`, `test_health.py` |
 | Server plan / single-GPU parallel role planning | `stable` | `serverplan.py` | `test_serverplan.py` |
 

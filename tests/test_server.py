@@ -813,7 +813,9 @@ class ServerTests(unittest.TestCase):
             "utf-8"
         )
 
-        with mock.patch("urllib.request.urlopen", side_effect=backend_error):
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request", side_effect=backend_error
+        ):
             conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
             try:
                 conn.request(
@@ -863,7 +865,9 @@ class ServerTests(unittest.TestCase):
             }
         ).encode("utf-8")
 
-        with mock.patch("urllib.request.urlopen", side_effect=backend_error):
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request", side_effect=backend_error
+        ):
             conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
             try:
                 conn.request(

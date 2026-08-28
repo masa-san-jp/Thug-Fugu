@@ -35,7 +35,7 @@ class BackendRedactionTests(unittest.TestCase):
             )
         )
 
-        with mock.patch("urllib.request.urlopen", side_effect=error):
+        with mock.patch("fugu_local.backends._DEFAULT_TRANSPORT.request", side_effect=error):
             with self.assertRaises(BackendError) as ctx:
                 backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hello")]))
 
@@ -68,7 +68,7 @@ class BackendRedactionTests(unittest.TestCase):
             )
         )
 
-        with mock.patch("urllib.request.urlopen", return_value=Response()):
+        with mock.patch("fugu_local.backends._DEFAULT_TRANSPORT.request", return_value=Response()):
             with self.assertRaises(BackendError) as ctx:
                 backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hello")]))
 
@@ -84,12 +84,14 @@ class OllamaProbeTests(unittest.TestCase):
         response.status = 200
         response.__enter__.return_value = response
 
-        with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request", return_value=response
+        ) as urlopen:
             healthy = probe_ollama("http://localhost:11434/", timeout_seconds=2.5)
 
         self.assertTrue(healthy)
-        request = urlopen.call_args.args[0]
-        self.assertEqual(request.full_url, "http://localhost:11434/api/tags")
+        request = urlopen.call_args
+        self.assertEqual(request.args[1], "http://localhost:11434/api/tags")
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 2.5)
 
     def test_probe_can_require_configured_model(self):
@@ -100,7 +102,7 @@ class OllamaProbeTests(unittest.TestCase):
         )
         response.__enter__.return_value = response
 
-        with mock.patch("urllib.request.urlopen", return_value=response):
+        with mock.patch("fugu_local.backends._DEFAULT_TRANSPORT.request", return_value=response):
             present = probe_ollama(
                 "http://localhost:11434",
                 timeout_seconds=1,
@@ -119,7 +121,7 @@ class OllamaProbeTests(unittest.TestCase):
 
     def test_probe_returns_false_on_connection_error(self):
         with mock.patch(
-            "urllib.request.urlopen",
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
             side_effect=urllib.error.URLError("down"),
         ):
             healthy = probe_ollama("http://localhost:11434", timeout_seconds=1)
@@ -133,7 +135,9 @@ class OpenAICompatibleProbeTests(unittest.TestCase):
         response.status = 200
         response.__enter__.return_value = response
 
-        with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request", return_value=response
+        ) as urlopen:
             healthy = probe_openai_compatible(
                 "http://localhost:1234/",
                 timeout_seconds=2,
@@ -141,9 +145,9 @@ class OpenAICompatibleProbeTests(unittest.TestCase):
             )
 
         self.assertTrue(healthy)
-        request = urlopen.call_args.args[0]
-        self.assertEqual(request.full_url, "http://localhost:1234/v1/models")
-        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+        request = urlopen.call_args
+        self.assertEqual(request.args[1], "http://localhost:1234/v1/models")
+        self.assertEqual(request.kwargs["headers"]["authorization"], "Bearer secret")
 
     def test_probe_can_require_configured_model(self):
         response = mock.MagicMock()
@@ -153,7 +157,7 @@ class OpenAICompatibleProbeTests(unittest.TestCase):
         ).encode("utf-8")
         response.__enter__.return_value = response
 
-        with mock.patch("urllib.request.urlopen", return_value=response):
+        with mock.patch("fugu_local.backends._DEFAULT_TRANSPORT.request", return_value=response):
             present = probe_openai_compatible(
                 "http://localhost:1234",
                 timeout_seconds=1,
@@ -176,7 +180,7 @@ class OpenAICompatibleProbeTests(unittest.TestCase):
         response.read.return_value = b"not-json"
         response.__enter__.return_value = response
 
-        with mock.patch("urllib.request.urlopen", return_value=response):
+        with mock.patch("fugu_local.backends._DEFAULT_TRANSPORT.request", return_value=response):
             healthy = probe_openai_compatible(
                 "http://localhost:1234",
                 timeout_seconds=1,
@@ -202,7 +206,10 @@ class UsageParsingTests(unittest.TestCase):
             "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
         }
 
-        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)):
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
+            return_value=JsonResponse(payload),
+        ):
             response = backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
 
         self.assertEqual(response.content, "ok")
@@ -226,7 +233,10 @@ class UsageParsingTests(unittest.TestCase):
             "eval_count": 11,
         }
 
-        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)):
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
+            return_value=JsonResponse(payload),
+        ):
             response = backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
 
         self.assertEqual(response.content, "ok")
@@ -269,7 +279,10 @@ class BackendToolCallTests(unittest.TestCase):
         }
         tools = [{"type": "function", "function": {"name": "echo", "parameters": {}}}]
 
-        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)) as urlopen:
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
+            return_value=JsonResponse(payload),
+        ) as urlopen:
             response = backend.chat(
                 ChatRequest(
                     model="mock",
@@ -279,7 +292,7 @@ class BackendToolCallTests(unittest.TestCase):
                 )
             )
 
-        request_payload = json.loads(urlopen.call_args.args[0].data)
+        request_payload = json.loads(urlopen.call_args.kwargs["body"])
         self.assertEqual(request_payload["tools"], tools)
         self.assertEqual(request_payload["tool_choice"], "required")
         self.assertEqual(response.content, "")
@@ -313,7 +326,10 @@ class BackendToolCallTests(unittest.TestCase):
         }
         tools = [{"type": "function", "function": {"name": "echo", "parameters": {}}}]
 
-        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)) as urlopen:
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
+            return_value=JsonResponse(payload),
+        ) as urlopen:
             response = backend.chat(
                 ChatRequest(
                     model="mock",
@@ -322,7 +338,7 @@ class BackendToolCallTests(unittest.TestCase):
                 )
             )
 
-        request_payload = json.loads(urlopen.call_args.args[0].data)
+        request_payload = json.loads(urlopen.call_args.kwargs["body"])
         self.assertEqual(request_payload["tools"], tools)
         self.assertEqual(response.finish_reason, "tool_calls")
         self.assertEqual(
@@ -344,10 +360,13 @@ class SeedPayloadTests(unittest.TestCase):
         )
         payload = {"message": {"content": "ok"}}
 
-        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)) as urlopen:
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
+            return_value=JsonResponse(payload),
+        ) as urlopen:
             backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")], seed=42))
 
-        request_payload = json.loads(urlopen.call_args.args[0].data)
+        request_payload = json.loads(urlopen.call_args.kwargs["body"])
         self.assertEqual(request_payload["options"]["seed"], 42)
 
     def test_openai_payload_includes_seed_when_set(self):
@@ -361,10 +380,13 @@ class SeedPayloadTests(unittest.TestCase):
         )
         payload = {"choices": [{"message": {"content": "ok"}}]}
 
-        with mock.patch("urllib.request.urlopen", return_value=JsonResponse(payload)) as urlopen:
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
+            return_value=JsonResponse(payload),
+        ) as urlopen:
             backend.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")], seed=42))
 
-        request_payload = json.loads(urlopen.call_args.args[0].data)
+        request_payload = json.loads(urlopen.call_args.kwargs["body"])
         self.assertEqual(request_payload["seed"], 42)
 
     def test_payload_omits_seed_when_none(self):
@@ -386,19 +408,19 @@ class SeedPayloadTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "urllib.request.urlopen",
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
             return_value=JsonResponse({"message": {"content": "ok"}}),
         ) as urlopen:
             ollama.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
-        ollama_payload = json.loads(urlopen.call_args.args[0].data)
+        ollama_payload = json.loads(urlopen.call_args.kwargs["body"])
         self.assertNotIn("seed", ollama_payload["options"])
 
         with mock.patch(
-            "urllib.request.urlopen",
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
             return_value=JsonResponse({"choices": [{"message": {"content": "ok"}}]}),
         ) as urlopen:
             openai_compatible.chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
-        openai_payload = json.loads(urlopen.call_args.args[0].data)
+        openai_payload = json.loads(urlopen.call_args.kwargs["body"])
         self.assertNotIn("seed", openai_payload)
 
     def test_stream_payload_includes_seed_when_set(self):
@@ -420,7 +442,7 @@ class SeedPayloadTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "urllib.request.urlopen",
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
             return_value=StreamResponse([{"message": {"content": "hi"}, "done": True}]),
         ) as urlopen:
             list(
@@ -428,11 +450,11 @@ class SeedPayloadTests(unittest.TestCase):
                     ChatRequest(model="mock", messages=[ChatMessage("user", "hi")], seed=7)
                 )
             )
-        ollama_payload = json.loads(urlopen.call_args.args[0].data)
+        ollama_payload = json.loads(urlopen.call_args.kwargs["body"])
         self.assertEqual(ollama_payload["options"]["seed"], 7)
 
         with mock.patch(
-            "urllib.request.urlopen",
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
             return_value=RawStreamResponse([b"data: [DONE]\n"]),
         ) as urlopen:
             list(
@@ -440,7 +462,7 @@ class SeedPayloadTests(unittest.TestCase):
                     ChatRequest(model="mock", messages=[ChatMessage("user", "hi")], seed=7)
                 )
             )
-        openai_payload = json.loads(urlopen.call_args.args[0].data)
+        openai_payload = json.loads(urlopen.call_args.kwargs["body"])
         self.assertEqual(openai_payload["seed"], 7)
 
 
@@ -467,7 +489,9 @@ class StreamingBackendTests(unittest.TestCase):
             ]
         )
 
-        with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+        with mock.patch(
+            "fugu_local.backends._DEFAULT_TRANSPORT.request", return_value=response
+        ) as urlopen:
             chunks = list(
                 backend.stream_chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
             )
@@ -475,8 +499,8 @@ class StreamingBackendTests(unittest.TestCase):
         self.assertEqual([chunk.delta for chunk in chunks], ["hel", "lo", ""])
         self.assertEqual(chunks[-1].finish_reason, "stop")
         self.assertEqual(chunks[-1].usage.total_tokens, 5)
-        request = urlopen.call_args.args[0]
-        self.assertTrue(json.loads(request.data)["stream"])
+        request = urlopen.call_args
+        self.assertTrue(json.loads(request.kwargs["body"])["stream"])
 
     def test_openai_stream_parses_sse_done_and_usage(self):
         backend = OpenAICompatibleBackend(
@@ -498,7 +522,7 @@ class StreamingBackendTests(unittest.TestCase):
             ]
         )
 
-        with mock.patch("urllib.request.urlopen", return_value=response):
+        with mock.patch("fugu_local.backends._DEFAULT_TRANSPORT.request", return_value=response):
             chunks = list(
                 backend.stream_chat(ChatRequest(model="mock", messages=[ChatMessage("user", "hi")]))
             )
@@ -518,7 +542,7 @@ class StreamingBackendTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "urllib.request.urlopen",
+            "fugu_local.backends._DEFAULT_TRANSPORT.request",
             return_value=RawStreamResponse([b"data: {not-json}\n"]),
         ):
             with self.assertRaises(BackendError):
