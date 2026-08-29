@@ -5,8 +5,13 @@
 Use Python 3.9+ and install the development extras:
 
 ```bash
-python -m pip install '.[dev]'
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
 ```
+
+Windows PowerShell では `py -m venv .venv` と `.venv\Scripts\Activate.ps1` を
+使ってください。
 
 Before opening a pull request, run the canonical verification entry point:
 
