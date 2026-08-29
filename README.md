@@ -80,14 +80,22 @@ Thug AI の Fugu のように、複数ロールのローカル LLM を協調実�
 - MCP を使う場合のみ、`mcp` extra を追加
 
 ```bash
-python3 -m pip install -e .
+# macOS / Linux
+python3 -m venv .venv
+. .venv/bin/activate
+
+python -m pip install -e .
 fugu-local --help
 ```
+
+Windows PowerShell では `py -m venv .venv` と
+`.venv\Scripts\Activate.ps1` を使ってから、同じ `python -m pip install -e .`
+を実行してください。以降の CLI コマンドは、この仮想環境を有効にした状態で実行します。
 
 MCP連携が必要な場合だけ、次を追加で実行します。
 
 ```bash
-python3 -m pip install -e '.[mcp]'
+python -m pip install -e '.[mcp]'
 ```
 
 開発・テスト用の lint、coverage、package build は `.[dev]` extra です。通常利用に
@@ -347,7 +355,7 @@ PYTHONPATH=src python3 -m fugu_local run \
 Thug-Fugu を MCP ツール `consult_thug_fugu` として公開し、Claude Code などの外側エージェントから「相談役」として呼べます（README のパターン2）。外側エージェントが tool 実行と制御ループを保持し、多視点推論だけを Thug-Fugu に委譲します。
 
 ```bash
-python3 -m pip install -e '.[mcp]'
+python -m pip install -e '.[mcp]'
 claude mcp add thug-fugu -- fugu-local-mcp --config /abs/path/examples/fugu-local.consult.json
 ```
 
@@ -492,7 +500,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 開発用ツールを入れる場合:
 
 ```bash
-python3 -m pip install -e '.[dev]'
+python -m pip install -e '.[dev]'
 ```
 
 CI と同等の品質チェック:
