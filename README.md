@@ -4,11 +4,11 @@
 
 Thug AI の Fugu のように、複数ロールのローカル LLM を協調実行するための最小 Python 実装です。
 
-> **English:** A minimal, standard-library-only Python toolkit for orchestrating **multiple local LLM roles** (planner / coder / reviewer / synthesizer) in parallel. It talks to **Ollama** and **OpenAI-compatible servers** (LM Studio, llama.cpp server, vLLM, …), merges the roles into a single answer, and exposes an **OpenAI Chat Completions–compatible local HTTP API** plus an **MCP consult tool** (`consult_thug_fugu`) for agents such as Claude Code. Local-first and experimental — no external proprietary API required.
+> **English:** A minimal Python toolkit with a standard-library-only core for orchestrating **multiple local LLM roles** (planner / coder / reviewer / synthesizer) in parallel. It talks to **Ollama** and **OpenAI-compatible servers** (LM Studio, llama.cpp server, vLLM, …), merges the roles into a single answer, and exposes an **OpenAI Chat Completions–compatible local HTTP API**. An optional MCP extra provides `consult_thug_fugu` for agents such as Claude Code. Local-first and experimental — no external proprietary API required.
 
 **Status:** Local-first experimental. Built-in HTTP server はローカル開発 / private network 用であり、公開インターネット向けの hardened API server ではありません。外部公開する場合は reverse proxy 側で TLS、認証、rate limit、request size limit を設定してください。
 
-標準ライブラリだけで動き、**Ollama** と **OpenAI 互換サーバー**（LM Studio、llama.cpp server、vLLM など）をバックエンドとして扱えます。planner / coder / reviewer などの複数ロールを並列実行し、synthesizer ロールが 1 つの回答に統合します。
+コアは標準ライブラリだけで動き、**Ollama** と **OpenAI 互換サーバー**（LM Studio、llama.cpp server、vLLM など）をバックエンドとして扱えます。planner / coder / reviewer などの複数ロールを並列実行し、synthesizer ロールが 1 つの回答に統合します。MCP連携は任意の `mcp` extra です。
 
 - 設計仕様: [docs/design/local-llm-orchestration.md](docs/design/local-llm-orchestration.md)
 - 分散構成（拡張）: [docs/design/distributed-inference.md](docs/design/distributed-inference.md)
@@ -29,10 +29,10 @@ Thug AI の Fugu のように、複数ロールのローカル LLM を協調実�
 ## リポジトリ概要 / Repository overview
 
 **日本語（About 用の短い説明）**
-> 複数ロールのローカル LLM（planner / coder / reviewer / synthesizer）を並列に協調実行する最小 Python 実装。Ollama と OpenAI 互換サーバーに対応し、OpenAI Chat Completions 互換のローカル HTTP API と Claude Code 向け MCP ツールを備えます。標準ライブラリのみ・ローカルファースト。
+> Ollama / OpenAI 互換サーバー上で複数ロールのローカル LLM を並列実行する Python ツール。CLI と OpenAI 互換ローカル HTTP API を備え、MCP は任意対応。実験的・ローカルファースト。
 
 **English (short "About" description)**
-> Multi-role local LLM orchestration in pure Python — run planner / coder / reviewer / synthesizer roles in parallel over Ollama and OpenAI-compatible backends, with an OpenAI-compatible local HTTP API and an MCP consult tool for Claude Code. Standard-library only, local-first.
+> Parallel local-LLM role orchestration in Python for Ollama and OpenAI-compatible servers; CLI, local OpenAI-compatible API, and optional MCP. Experimental, local-first.
 
 **推奨トピック / Suggested GitHub topics**
 
@@ -56,6 +56,50 @@ Thug AI の Fugu のように、複数ロールのローカル LLM を協調実�
 - Claude Code / MCP から呼べる consultant tool（`consult_thug_fugu`）
 - CLI からの単発実行（`run`）と評価ハーネス
 - 実 LLM なしで動く `echo` backend によるテスト
+
+## まず何を使うか
+
+| 目的 | 使うもの | 最初に見る場所 |
+|---|---|---|
+| サーバーなしで配線を確認 | `echo` backend | `examples/fugu-local.echo.json` |
+| Apple Silicon / 個人環境で手軽に使う | Ollama | `examples/fugu-local.ollama.json` |
+| GPUサーバーや既存推論サーバーへ接続 | `openai-compatible` | `examples/fugu-local.openai-compatible.json` |
+| 複数 endpoint の failover / routing | `model_pools` | `examples/fugu-local.model-pool.json` |
+| Claude Code などから相談役として呼ぶ | 任意 backend + MCP extra | [MCP連携](docs/integrations/claude-code.md) |
+
+このプロジェクトが保証するのは、Thug-Fugu から複数 worker を並列に要求し、
+結果を統合することです。`max_parallel_workers` は要求の同時数であり、単一GPU
+で物理的な同時推論や速度向上を保証しません。GPUの batching / queue / cache は
+接続先ランタイムの設定と実測で確認してください。
+
+## 必要条件とインストール
+
+- Python 3.9 以上
+- コア利用では外部 Python 依存なし
+- 実 LLM を使う場合のみ、Ollama または OpenAI 互換サーバーと利用可能なモデル
+- MCP を使う場合のみ、`mcp` extra を追加
+
+```bash
+# macOS / Linux
+python3 -m venv .venv
+. .venv/bin/activate
+
+python -m pip install -e .
+fugu-local --help
+```
+
+Windows PowerShell では `py -m venv .venv` と
+`.venv\Scripts\Activate.ps1` を使ってから、同じ `python -m pip install -e .`
+を実行してください。以降の CLI コマンドは、この仮想環境を有効にした状態で実行します。
+
+MCP連携が必要な場合だけ、次を追加で実行します。
+
+```bash
+python -m pip install -e '.[mcp]'
+```
+
+開発・テスト用の lint、coverage、package build は `.[dev]` extra です。通常利用に
+は不要です。
 
 ---
 
@@ -83,35 +127,46 @@ flowchart TD
 
 ## クイックスタート
 
-### 1. 設定確認
+### 1. サーバーなしで動作確認
 
 ```bash
-python3 -m fugu_local validate-config --config examples/fugu-local.echo.json
+fugu-local validate-config --config examples/fugu-local.echo.json
 # => OK: 2 model(s), 4 role(s), selection_policy=keyword
-```
-
-### 2. 単発実行
-
-```bash
-PYTHONPATH=src python3 -m fugu_local run \
+fugu-local run \
   --config examples/fugu-local.echo.json \
   "ローカルLLMのオーケストレーション設計をレビューして"
 ```
 
-インストール後は `fugu-local run --config ... "質問"` でも実行できます。
+インストールせずリポジトリから実行する場合は、各コマンドの先頭に
+`PYTHONPATH=src python3 -m fugu_local` を付けます。
 
 `--json` を付けると、回答に加えて usage・verification・worker などのメタデータを JSON で受け取れます（エージェントから呼ぶとき向け）。
 
 ```bash
-PYTHONPATH=src python3 -m fugu_local run --json \
+fugu-local run --json \
   --config examples/fugu-local.echo.json \
   "設計をレビューして"
 ```
 
+### 2. Ollama へ接続
+
+別ターミナルで Ollama を起動し、設定例にあるモデルを取得します。
+
+```bash
+ollama serve
+ollama pull llama3.1
+fugu-local run \
+  --config examples/fugu-local.ollama.json \
+  "並列実行の設計をレビューして"
+```
+
+`examples/fugu-local.ollama.json` の `models[].model` は、手元に存在するモデル名へ
+変更してください。Ollama の導入方法は Ollama の公式ドキュメントを参照します。
+
 ### 3. HTTP サーバー（OpenAI Chat Completions 互換）
 
 ```bash
-PYTHONPATH=src python3 -m fugu_local serve \
+fugu-local serve \
   --config examples/fugu-local.ollama.json --host 127.0.0.1 --port 8080 \
   --max-concurrent-requests 8   # 同時処理の上限。超過時は HTTP 429。/health に現在の上限を表示
 
@@ -131,6 +186,9 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
 ```
 
 キューが満杯の場合や待機がタイムアウトした場合は 429 を返します。現在のキュー長は `/health` の `queue` に表示されます。
+
+外部公開を想定した認証・TLS・rate limit はこの組み込みサーバーにはありません。
+`127.0.0.1` のまま使うか、必要な保護を設定した reverse proxy の背後に置いてください。
 
 ---
 
@@ -297,7 +355,7 @@ PYTHONPATH=src python3 -m fugu_local run \
 Thug-Fugu を MCP ツール `consult_thug_fugu` として公開し、Claude Code などの外側エージェントから「相談役」として呼べます（README のパターン2）。外側エージェントが tool 実行と制御ループを保持し、多視点推論だけを Thug-Fugu に委譲します。
 
 ```bash
-pip install -e '.[mcp]'
+python -m pip install -e '.[mcp]'
 claude mcp add thug-fugu -- fugu-local-mcp --config /abs/path/examples/fugu-local.consult.json
 ```
 
@@ -442,7 +500,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 開発用ツールを入れる場合:
 
 ```bash
-python3 -m pip install -e '.[dev]'
+python -m pip install -e '.[dev]'
 ```
 
 CI と同等の品質チェック:

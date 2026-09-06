@@ -13,17 +13,16 @@ to Thug-Fugu. Thug-Fugu is exposed as an MCP tool named `consult_thug_fugu`.
   ollama pull qwen2.5:0.5b
   ```
 
-- Thug-Fugu installed with the MCP extra:
+- A virtual environment with Thug-Fugu installed with the MCP extra:
 
   ```bash
-  pip install 'thug-fugu-local[mcp]'
+  python3 -m venv .venv
+  . .venv/bin/activate
+  python -m pip install -e '.[mcp]'
   ```
 
-  Or from a checkout:
-
-  ```bash
-  pip install -e '.[mcp]'
-  ```
+  Run this from the repository checkout. If you install a published package
+  instead, use the package name and version supplied by that distribution.
 
 - A Thug-Fugu config pointing at your local model(s). See
   `examples/fugu-local.consult.json`.
