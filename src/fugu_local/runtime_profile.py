@@ -11,8 +11,7 @@ from __future__ import annotations
 import math
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional
-
+from typing import Any, Dict, Mapping
 
 CAPABILITY_NAMES = (
     "streaming",
@@ -69,8 +68,11 @@ def canonical_endpoint_identity(endpoint: str) -> str:
         port = parsed.port
     except ValueError as exc:
         raise ValueError("endpoint URL has an invalid port or IPv6 host") from exc
-    if not parsed.scheme or not hostname:
-        return value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    if not hostname:
+        label = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+        if "@" in label:
+            raise ValueError("endpoint credentials require an unambiguous URL authority")
+        return label
 
     scheme = parsed.scheme.lower()
     hostname = hostname.lower()
@@ -100,9 +102,7 @@ class RuntimeCapabilities:
         for name in CAPABILITY_NAMES:
             value = getattr(self, name)
             if value not in CAPABILITY_STATES:
-                raise ValueError(
-                    f"capabilities.{name} must be one of {sorted(CAPABILITY_STATES)}"
-                )
+                raise ValueError(f"capabilities.{name} must be one of {sorted(CAPABILITY_STATES)}")
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "RuntimeCapabilities":
@@ -143,9 +143,10 @@ class EndpointRuntimeProfile:
 
     def __post_init__(self) -> None:
         for field_name in ("identity", "backend", "runtime", "model"):
-            if not isinstance(getattr(self, field_name), str) or not getattr(
-                self, field_name
-            ).strip():
+            if (
+                not isinstance(getattr(self, field_name), str)
+                or not getattr(self, field_name).strip()
+            ):
                 raise ValueError(f"{field_name} must be a non-empty string")
         if isinstance(self.max_inflight, bool) or not isinstance(self.max_inflight, int):
             raise ValueError("max_inflight must be a positive integer")
@@ -158,9 +159,7 @@ class EndpointRuntimeProfile:
         if not isinstance(self.capabilities, RuntimeCapabilities):
             raise ValueError("capabilities must be a RuntimeCapabilities object")
         if self.value_source not in PROFILE_VALUE_SOURCES:
-            raise ValueError(
-                f"value_source must be one of {sorted(PROFILE_VALUE_SOURCES)}"
-            )
+            raise ValueError(f"value_source must be one of {sorted(PROFILE_VALUE_SOURCES)}")
 
     @classmethod
     def from_endpoint_config(

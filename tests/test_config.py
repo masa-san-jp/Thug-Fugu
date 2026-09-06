@@ -768,9 +768,7 @@ class ModelPoolConfigTests(unittest.TestCase):
                         "name": "fast",
                         "backend": "ollama",
                         "model": "llama3",
-                        "endpoints": [
-                            {"url": "http://127.0.0.1:11434", "max_inflight": 0}
-                        ],
+                        "endpoints": [{"url": "http://127.0.0.1:11434", "max_inflight": 0}],
                     }
                 )
             )

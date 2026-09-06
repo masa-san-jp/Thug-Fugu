@@ -114,6 +114,10 @@ sum of `max_inflight` across independent endpoints. `max_parallel_workers` is
 only an orchestration request limit and must not be used as a substitute for
 this count.
 
+Scheme-relative URLs also have userinfo, query, and fragment removed from
+their profile identity. Legacy labels remain accepted, but labels containing
+`@` without a parseable host are rejected with an error that omits the input.
+
 ## Runtime naming and limits
 
 `ollama`, `llama.cpp`, `vLLM`, and other runtime values are configuration

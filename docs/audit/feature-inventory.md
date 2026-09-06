@@ -46,7 +46,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Feature | Status | Code | Tests |
 |---|---|---|---|
 | Model pools with multiple endpoints | `stable` | `config.py` (`ModelPoolConfig`), `routing.py` | `test_routing.py`, `test_config.py` |
-| Static endpoint runtime profiles (capacity, weight, backend/runtime labels, and tri-state capabilities) | `experimental` | `runtime_profile.py`, `config.py` (`runtime_profiles()`) | `test_runtime_profile.py`, `test_config.py` |
+| Static endpoint runtime profiles (capacity, weight, backend/runtime labels, and tri-state capabilities; scheme-relative userinfo redaction and ambiguous credential-label rejection) | `experimental` | `runtime_profile.py`, `config.py` (`runtime_profiles()`) | `test_runtime_profile.py`, `test_config.py` |
 | Routing policies `round_robin` / `least_busy` | `stable` | `routing.py` (`_attempt_order`) | `test_routing.py` |
 | Failover across pool members | `stable` | `routing.py` (`chat`) | `test_routing.py` |
 | Passive cooldown / circuit breaker | `stable` | `routing.py` (`_record_failure`) | `test_routing.py` |

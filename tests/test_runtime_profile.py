@@ -8,6 +8,26 @@ from fugu_local.runtime_profile import (
 
 
 class EndpointIdentityTests(unittest.TestCase):
+    def test_scheme_relative_identity_redacts_userinfo(self):
+        profile = EndpointRuntimeProfile.from_endpoint_config(
+            "//user:password@[2001:DB8::1]:11434/v1/?token=secret#fragment",
+            backend="ollama",
+            model="example",
+        )
+        self.assertEqual(profile.identity, "//[2001:db8::1]:11434/v1")
+        self.assertNotIn("password", str(profile.to_dict()))
+        self.assertNotIn("secret", str(profile.to_dict()))
+
+    def test_ambiguous_credential_bearing_labels_are_rejected_safely(self):
+        for endpoint in ("user:password@127.0.0.1:11434", "http:///user:password@/"):
+            with self.subTest(endpoint=endpoint):
+                with self.assertRaises(ValueError) as caught:
+                    canonical_endpoint_identity(endpoint)
+                self.assertNotIn("password", str(caught.exception))
+
+    def test_legacy_label_remains_supported(self):
+        self.assertEqual(canonical_endpoint_identity("endpoint-a/?token=secret"), "endpoint-a")
+
     def test_redacts_credentials_query_fragment_and_normalizes_ipv6(self):
         identity = canonical_endpoint_identity(
             "HTTPS://user:password@[2001:DB8::1]:443/v1/?token=secret#fragment"
