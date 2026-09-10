@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Static endpoint runtime profiles: legacy string endpoints remain supported,
+  while direct models and model-pool members can expose normalized endpoint
+  identity, `max_inflight`, weight, backend/runtime labels, and conservative
+  tri-state capabilities through `runtime_profiles()`. Profiles never retain
+  URL credentials, query strings, or fragments, including for scheme-relative
+  URLs; ambiguous credential-bearing labels are rejected. See
+  `docs/design/endpoint-runtime-profile.md`.
 - Reproducible single-vs-multi configuration evaluation bundles with manifests,
   input snapshots, full JSONL outputs, CSV/summary metrics, token usage, hardware
   and quantization metadata, and manifest-based reruns.

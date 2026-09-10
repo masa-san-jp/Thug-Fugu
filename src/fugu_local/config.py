@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from .runtime_profile import EndpointRuntimeProfile, endpoint_url_from_config
 from .stages import STAGE_NAMES
 
 SUPPORTED_BACKENDS = {"ollama", "openai-compatible", "echo"}
@@ -36,6 +37,23 @@ class ModelConfig:
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     timeout_seconds: float = 120.0
+    runtime_profile: Optional[EndpointRuntimeProfile] = None
+
+    def runtime_profiles(self) -> List[EndpointRuntimeProfile]:
+        """Return the same profile interface used by model-pool members."""
+
+        if self.runtime_profile is not None:
+            return [self.runtime_profile]
+        if self.base_url:
+            return [
+                EndpointRuntimeProfile.from_endpoint_config(
+                    self.base_url,
+                    backend=self.backend,
+                    model=self.model,
+                    field_name=f"model '{self.name}'.base_url",
+                )
+            ]
+        return []
 
 
 @dataclass(frozen=True)
@@ -61,6 +79,22 @@ class ModelPoolConfig:
     timeout_seconds: float = 120.0
     cooldown_seconds: float = 0.0
     health: HealthCheckConfig = field(default_factory=HealthCheckConfig)
+    endpoint_profiles: List[EndpointRuntimeProfile] = field(default_factory=list)
+
+    def runtime_profiles(self) -> List[EndpointRuntimeProfile]:
+        """Return one normalized profile for every endpoint in stable order."""
+
+        if self.endpoint_profiles:
+            return list(self.endpoint_profiles)
+        return [
+            EndpointRuntimeProfile.from_endpoint_config(
+                endpoint,
+                backend=self.backend,
+                model=self.model,
+                field_name=f"model_pool '{self.name}'.endpoints[{index}]",
+            )
+            for index, endpoint in enumerate(self.endpoints)
+        ]
 
 
 @dataclass(frozen=True)
@@ -207,6 +241,16 @@ class FuguLocalConfig:
     def target_names(self) -> set:
         return {model.name for model in self.models} | {pool.name for pool in self.model_pools}
 
+    def runtime_profiles(self) -> List[EndpointRuntimeProfile]:
+        """Return all direct-model and pool-member profiles without re-parsing config."""
+
+        profiles: List[EndpointRuntimeProfile] = []
+        for model in self.models:
+            profiles.extend(model.runtime_profiles())
+        for pool in self.model_pools:
+            profiles.extend(pool.runtime_profiles())
+        return profiles
+
 
 def load_config(path: str) -> FuguLocalConfig:
     """Load and validate a JSON configuration file."""
@@ -304,13 +348,50 @@ def validate_config(config: FuguLocalConfig) -> None:
 
 def _model_from_dict(raw: Any) -> ModelConfig:
     obj = _required_object(raw, "model entry")
+    name = _required_str(obj, "name")
+    backend = _required_str(obj, "backend")
+    model = _required_str(obj, "model")
+    base_url = _optional_str(obj, "base_url")
+    endpoint_raw = obj.get("endpoint")
+    if endpoint_raw is not None and base_url is not None:
+        raise ConfigError("model entry must use either 'base_url' or 'endpoint', not both")
+    runtime_profile = None
+    if endpoint_raw is not None:
+        try:
+            base_url = endpoint_url_from_config(endpoint_raw, "model.endpoint")
+            runtime_profile = EndpointRuntimeProfile.from_endpoint_config(
+                endpoint_raw,
+                backend=backend,
+                model=model,
+                field_name="model.endpoint",
+            )
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+    elif obj.get("runtime_profile") is not None:
+        if base_url is None:
+            raise ConfigError("model.runtime_profile requires base_url")
+        profile_raw = obj.get("runtime_profile")
+        if not isinstance(profile_raw, Mapping):
+            raise ConfigError("model.runtime_profile must be an object")
+        profile_config = dict(profile_raw)
+        profile_config["url"] = base_url
+        try:
+            runtime_profile = EndpointRuntimeProfile.from_endpoint_config(
+                profile_config,
+                backend=backend,
+                model=model,
+                field_name="model.runtime_profile",
+            )
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     return ModelConfig(
-        name=_required_str(obj, "name"),
-        backend=_required_str(obj, "backend"),
-        model=_required_str(obj, "model"),
-        base_url=_optional_str(obj, "base_url"),
+        name=name,
+        backend=backend,
+        model=model,
+        base_url=base_url,
         api_key=_expand_optional_env(_optional_str(obj, "api_key")),
         timeout_seconds=_optional_number(obj, "timeout_seconds", default=120.0),
+        runtime_profile=runtime_profile,
     )
 
 
@@ -695,20 +776,37 @@ def _health_check_from_dict(raw: Any) -> HealthCheckConfig:
 def _model_pool_from_dict(raw: Any) -> ModelPoolConfig:
     obj = _required_object(raw, "model_pool entry")
     endpoints_raw = obj.get("endpoints")
-    if not isinstance(endpoints_raw, list) or not all(
-        isinstance(item, str) and item.strip() for item in endpoints_raw
-    ):
-        raise ConfigError("model_pool.endpoints must be a non-empty list of URL strings")
+    if not isinstance(endpoints_raw, list) or not endpoints_raw:
+        raise ConfigError("model_pool.endpoints must be a non-empty list of URL strings or objects")
+    backend = _required_str(obj, "backend")
+    model = _required_str(obj, "model")
+    endpoints: List[str] = []
+    endpoint_profiles: List[EndpointRuntimeProfile] = []
+    for index, endpoint_raw in enumerate(endpoints_raw):
+        field_name = f"model_pool.endpoints[{index}]"
+        try:
+            endpoints.append(endpoint_url_from_config(endpoint_raw, field_name))
+            endpoint_profiles.append(
+                EndpointRuntimeProfile.from_endpoint_config(
+                    endpoint_raw,
+                    backend=backend,
+                    model=model,
+                    field_name=field_name,
+                )
+            )
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     return ModelPoolConfig(
         name=_required_str(obj, "name"),
-        backend=_required_str(obj, "backend"),
-        model=_required_str(obj, "model"),
-        endpoints=list(endpoints_raw),
+        backend=backend,
+        model=model,
+        endpoints=endpoints,
         policy=_optional_str(obj, "policy") or "round_robin",
         api_key=_expand_optional_env(_optional_str(obj, "api_key")),
         timeout_seconds=_optional_number(obj, "timeout_seconds", default=120.0),
         cooldown_seconds=_optional_number(obj, "cooldown_seconds", default=0.0),
         health=_health_check_from_dict(obj.get("health", {})),
+        endpoint_profiles=endpoint_profiles,
     )
 
 
