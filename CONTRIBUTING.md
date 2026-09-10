@@ -5,18 +5,25 @@
 Use Python 3.9+ and install the development extras:
 
 ```bash
-python -m pip install '.[dev]'
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
 ```
 
-Before opening a pull request:
+Windows PowerShell では `py -m venv .venv` と `.venv\Scripts\Activate.ps1` を
+使ってください。
+
+Before opening a pull request, run the canonical verification entry point:
 
 ```bash
-python -m ruff check src tests
-python -m ruff format --check src tests
-PYTHONPATH=src python -m coverage run -m unittest discover -s tests -v
-python -m coverage report --fail-under=85
-python -m build
+make verify
 ```
+
+For quick iteration, `make verify-fast` runs lint, format, and tests without
+coverage or package build. The wrapper checks `src`, `tests`, and `scripts`.
+
+Codex and other implementation agents must also follow the repository runbook
+in [`AGENTS.md`](AGENTS.md).
 
 ## Feature status and documentation
 

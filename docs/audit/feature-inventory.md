@@ -46,6 +46,7 @@ Test counts below refer to `tests/` on this snapshot (208 tests total,
 | Feature | Status | Code | Tests |
 |---|---|---|---|
 | Model pools with multiple endpoints | `stable` | `config.py` (`ModelPoolConfig`), `routing.py` | `test_routing.py`, `test_config.py` |
+| Static endpoint runtime profiles (capacity, weight, backend/runtime labels, and tri-state capabilities; scheme-relative userinfo redaction and ambiguous credential-label rejection) | `experimental` | `runtime_profile.py`, `config.py` (`runtime_profiles()`) | `test_runtime_profile.py`, `test_config.py` |
 | Routing policies `round_robin` / `least_busy` | `stable` | `routing.py` (`_attempt_order`) | `test_routing.py` |
 | Failover across pool members | `stable` | `routing.py` (`chat`) | `test_routing.py` |
 | Passive cooldown / circuit breaker | `stable` | `routing.py` (`_record_failure`) | `test_routing.py` |
@@ -145,8 +146,9 @@ Resolved by [#71](https://github.com/masa-san-jp/Thug-Fugu/issues/71) on
 - The evaluation harness records quality, latency, errors, raw output, token
   usage, config/seed/quantization/hardware metadata, and rerunnable manifests.
   Automatic power and total-cost collection remains Phase 1 work (#74).
-- No machine-readable capability profile per model exists yet (Epic #69 Phase 2/3;
-  issues #82–#85).
+- Live capability probing and model/hardware-specific profiles remain separate
+  work in Epic #69 Phase 2/3 (issues #82–#87); the static profile contract is
+  implemented by #127.
 
 ## How to update this document
 
